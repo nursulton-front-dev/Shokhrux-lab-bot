@@ -19,6 +19,7 @@ from bot.database.models import User, Subscription, Payment
 from bot.states.registration import RegistrationStates
 from bot.config import config
 from bot.services.rahmat import generate_invoice_link
+from bot import texts
 
 router = Router()
 
@@ -31,18 +32,18 @@ TARIFFS = {
     "6": {"months": 6, "price": 2300000, "days": 180}
 }
 
-def main_menu_keyboard():
+def main_menu_keyboard(lang: str = "uz"):
+    lang = lang or "uz"
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="👤 Mening profilim"), KeyboardButton(text="🚀 Obuna bo'lish")],
-            [KeyboardButton(text="💬 Yordam")]
+            [KeyboardButton(text=texts.MENU_BUTTONS["profile"][lang]), KeyboardButton(text=texts.MENU_BUTTONS["subscribe"][lang])],
+            [KeyboardButton(text=texts.MENU_BUTTONS["support"][lang]), KeyboardButton(text=texts.MENU_BUTTONS["lang"][lang])]
         ],
         resize_keyboard=True
     )
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession):
-    # Ensure user is recorded in the database
     stmt = select(User).where(User.telegram_id == message.from_user.id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
@@ -51,76 +52,104 @@ async def cmd_start(message: Message, session: AsyncSession):
         user = User(
             telegram_id=message.from_user.id,
             username=message.from_user.username,
-            full_name=message.from_user.full_name
+            full_name=message.from_user.full_name,
+            language=None
         )
         session.add(user)
         await session.commit()
-    
-    welcome_text = (
-        "🌟 <b>Arzanda qomat va sog'lom hayot sari xush kelibsiz!</b>\n\n"
-        "Siz shunchaki kanalga emas, balki haqiqiy natijalarga erishishingizga yordam beruvchi yopiq fitnes-klubga taklifnoma oldingiz!\n\n"
-        "Bu yerda internetdagi quruq va foydasiz maslahatlar emas, balki aniq ishlaydigan tizimni qo'lga kiritasiz:\n\n"
-        "🏋️‍♂️ <b>Yopiq kanalimizda sizni nimalar kutmoqda?</b>\n\n"
-        "• Ozish va mushak massasini yig'ish uchun samarali mashg'ulot dasturlari\n\n"
-        "• Ortikcha vazndan xalos bo'lish uchun shaxsiy va mazali taomnoma (PP-retseptlar)\n\n"
-        "• Moddalar almashinuvini tezlashtirish hamda natijani saqlab qolish sirlari\n\n"
-        "• Sizni to'xtab qolishga yo'l qo'ymaydigan kuchli motivatsiya va hamjamiyat\n\n"
-        "🔥 Ortiqcha vazndan xalos bo'lib, o'zingizning eng yaxshi versiyangizni kashf etish vaqti keldi!\n\n"
-        "O'zingizga mos tarifni tanlang va hoziroq safimizga qo'shiling 👇"
-    )
-    
-    await message.answer(
-        welcome_text,
-        reply_markup=main_menu_keyboard()
-    )
-    await show_tariffs(message)
 
-@router.message(F.text == "💬 Yordam")
-async def msg_support(message: Message):
+    if not user.language:
+        # Prompt for language
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="set_lang_uz"), InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru")]
+        ])
+        await message.answer("🇺🇿 Iltimos, tilni tanlang:\n🇷🇺 Пожалуйста, выберите язык:", reply_markup=kb)
+        return
+
+    await message.answer(
+        texts.WELCOME_TEXT[user.language],
+        reply_markup=main_menu_keyboard(user.language)
+    )
+    await show_tariffs(message, user.language)
+
+@router.callback_query(F.data.startswith("set_lang_"))
+async def cb_set_lang(callback: CallbackQuery, session: AsyncSession):
+    lang = callback.data.split("_")[2]
+    user_id = callback.from_user.id
+    
+    stmt = select(User).where(User.telegram_id == user_id)
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    
+    if user:
+        user.language = lang
+        await session.commit()
+        
+    await callback.message.delete()
+    await callback.message.answer(
+        texts.WELCOME_TEXT[lang],
+        reply_markup=main_menu_keyboard(lang)
+    )
+    await show_tariffs(callback.message, lang)
+
+@router.message(F.text.in_([texts.MENU_BUTTONS["support"]["uz"], texts.MENU_BUTTONS["support"]["ru"]]))
+async def msg_support(message: Message, session: AsyncSession):
+    stmt = select(User).where(User.telegram_id == message.from_user.id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
+    
     if config.support_username:
-        await message.answer(f"Savollaringiz bo'lsa, yordamchi administrator bilan bog'laning: @{config.support_username}")
+        await message.answer(texts.SUPPORT_TEXT[lang].format(username=config.support_username))
     else:
-        await message.answer("Qo'llab-quvvatlash markazi bilan bog'lanish uchun adminimizga yozing.")
+        await message.answer(texts.SUPPORT_NO_UNAME[lang])
+
+@router.message(F.text.in_([texts.MENU_BUTTONS["lang"]["uz"], texts.MENU_BUTTONS["lang"]["ru"]]))
+async def msg_change_lang(message: Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="set_lang_uz"), InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru")]
+    ])
+    await message.answer("🇺🇿 Iltimos, tilni tanlang:\n🇷🇺 Пожалуйста, выберите язык:", reply_markup=kb)
 
 @router.message(Command("profile"))
-@router.message(F.text == "👤 Mening profilim")
+@router.message(F.text.in_([texts.MENU_BUTTONS["profile"]["uz"], texts.MENU_BUTTONS["profile"]["ru"]]))
 async def msg_profile(message: Message, session: AsyncSession):
     user_id = message.from_user.id
     
-    stmt = select(Subscription).where(
+    stmt = select(User).where(User.telegram_id == user_id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
+    
+    sub_stmt = select(Subscription).where(
         Subscription.user_id == user_id,
         Subscription.status == "active"
     ).order_by(Subscription.expires_at.desc()).limit(1)
     
-    result = await session.execute(stmt)
-    current_sub = result.scalar_one_or_none()
-    
+    current_sub = await session.scalar(sub_stmt)
     now = datetime.datetime.now(datetime.timezone.utc)
     
     if current_sub and current_sub.expires_at > now:
         status_emoji = "✅"
-        status_text = "FAOL"
+        status_text = texts.STATUS_ACTIVE[lang]
         expires_at_str = current_sub.expires_at.strftime("%Y-%m-%d %H:%M")
     else:
         status_emoji = "❌"
-        status_text = "MUDDATI TUGAGAN (yoki yo'q)"
+        status_text = texts.STATUS_EXPIRED[lang]
         expires_at_str = "-"
         
-    text = (
-        f"👤 <b>Sizning profilingiz</b>\n\n"
-        f"🆔 ID: <code>{user_id}</code>\n\n"
-        f"📊 Status: {status_emoji} {status_text}\n\n"
-        f"⏳ Obuna tugash sanasi: {expires_at_str}\n\n"
-        f"💡 Obunangiz muddatini istalgan vaqtda uzaytirishingiz mumkin."
+    text = texts.PROFILE_TEXT[lang].format(
+        user_id=user_id,
+        status_emoji=status_emoji,
+        status_text=status_text,
+        expires_at_str=expires_at_str
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Obunani uzaytirish / Xarid", callback_data="start_sub")]
+        [InlineKeyboardButton(text=texts.SUB_PROLONG[lang], callback_data="start_sub")]
     ])
     
     await message.answer(text, reply_markup=kb)
 
-@router.message(F.text == "🚀 Obuna bo'lish")
+@router.message(F.text.in_([texts.MENU_BUTTONS["subscribe"]["uz"], texts.MENU_BUTTONS["subscribe"]["ru"]]))
 async def msg_subscribe(message: Message, session: AsyncSession, state: FSMContext):
     await check_registration_and_show_tariffs(message.from_user.id, message, session, state)
 
@@ -133,24 +162,29 @@ async def check_registration_and_show_tariffs(user_id: int, message_obj: Message
     stmt = select(User).where(User.telegram_id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
+    lang = user.language if user and user.language else "uz"
     
     if not user or not user.full_name or not user.phone_number:
-        await message_obj.answer("Obunani rasmiylashtirish uchun, iltimos, Ismingiz va Familiyangizni kiriting:")
+        await message_obj.answer(texts.REG_ASK_NAME[lang])
         await state.set_state(RegistrationStates.waiting_for_name)
     else:
-        await show_tariffs(message_obj)
+        await show_tariffs(message_obj, lang)
 
 @router.message(RegistrationStates.waiting_for_name, F.text)
-async def process_name(message: Message, state: FSMContext):
+async def process_name(message: Message, state: FSMContext, session: AsyncSession):
     await state.update_data(full_name=message.text)
     
+    stmt = select(User).where(User.telegram_id == message.from_user.id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
+    
     kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Raqamni yuborish", request_contact=True)]],
+        keyboard=[[KeyboardButton(text=texts.REG_ASK_PHONE_KB[lang], request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
     
-    await message.answer("Aktivatsiya qilish uchun telefon raqamingizni yuboring:", reply_markup=kb)
+    await message.answer(texts.REG_ASK_PHONE[lang], reply_markup=kb)
     await state.set_state(RegistrationStates.waiting_for_phone)
 
 @router.message(RegistrationStates.waiting_for_phone, F.contact)
@@ -162,32 +196,37 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
     stmt = select(User).where(User.telegram_id == message.from_user.id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
+    lang = user.language if user and user.language else "uz"
     
     if user:
         user.full_name = full_name
         user.phone_number = phone_number
         await session.commit()
     
-    await message.answer("✅ Ma'lumotlaringiz muvaffaqiyatli saqlandi!", reply_markup=main_menu_keyboard())
+    await message.answer(texts.REG_SUCCESS[lang], reply_markup=main_menu_keyboard(lang))
     await state.clear()
     
-    await show_tariffs(message)
+    await show_tariffs(message, lang)
 
-async def show_tariffs(message: Message):
+async def show_tariffs(message: Message, lang: str = "uz"):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 Oylik — 500,000 UZS", callback_data="tariff_1")],
-        [InlineKeyboardButton(text="3 Oylik — 1,200,000 UZS", callback_data="tariff_3")],
-        [InlineKeyboardButton(text="6 Oylik — 2,300,000 UZS", callback_data="tariff_6")]
+        [InlineKeyboardButton(text="1 Oylik / Мес. — 500,000 UZS", callback_data="tariff_1")],
+        [InlineKeyboardButton(text="3 Oylik / Мес. — 1,200,000 UZS", callback_data="tariff_3")],
+        [InlineKeyboardButton(text="6 Oylik / Мес. — 2,300,000 UZS", callback_data="tariff_6")]
     ])
-    await message.answer("O'zingizga mos tarifni tanlang:", reply_markup=keyboard)
+    await message.answer(texts.CHOOSE_TARIFF[lang], reply_markup=keyboard)
 
 @router.callback_query(F.data.startswith("tariff_"))
 async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
     tariff_months = callback.data.split("_")[1]
     tariff = TARIFFS[tariff_months]
+    user_id = callback.from_user.id
+    
+    stmt = select(User).where(User.telegram_id == user_id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
     
     # Calculate expiry date
-    user_id = callback.from_user.id
     sub_stmt = select(Subscription).where(
         Subscription.user_id == user_id,
         Subscription.status == "active"
@@ -204,38 +243,35 @@ async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
     expiry_date_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 To'lov qilish", callback_data=f"pay_manual_{tariff_months}")],
-        [InlineKeyboardButton(text="◀️ Orqaga", callback_data="start_sub")]
+        [InlineKeyboardButton(text=texts.PAY_BTN[lang], callback_data=f"pay_manual_{tariff_months}")],
+        [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")]
     ])
     
-    text = (
-        f"💳 <b>{tariff_months} oylik tarifi tanlandi</b>\n\n"
-        f"💰 To'lov miqdori: <b>{tariff['price']:,} UZS</b>\n\n"
-        f"⏳ Obuna tugash sanasi: <b>{expiry_date_str}</b>\n\n"
-        f"⚡️ <b>To'lov usullari:</b>\n\n"
-        f"Payme, Click, Uzum Bank yoki bank kartalari (Uzcard / Humo) orqali bir zumda to'lashingiz mumkin.\n\n"
-        f"To'lovni amalga oshirish uchun pastdagi «To'lov qilish» tugmasini bosing.\n\n"
-        f"To'lov tasdiqlanishi bilan bot sizga avtomatik ravishda yopiq fitnes-kanalga bir marta ishlatiladigan taklifnoma havolasini yuboradi!"
+    text = texts.PAY_TARIFF_INFO[lang].format(
+        months=tariff_months,
+        price=f"{tariff['price']:,}",
+        expires_at=expiry_date_str
     )
             
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 @router.callback_query(F.data.startswith("pay_manual_"))
-async def cb_pay_manual(callback: CallbackQuery):
+async def cb_pay_manual(callback: CallbackQuery, session: AsyncSession):
     tariff_months = callback.data.split("_")[2]
     tariff = TARIFFS[tariff_months]
+    user_id = callback.from_user.id
+    
+    stmt = select(User).where(User.telegram_id == user_id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ To'lov qildim", callback_data=f"mock_pay_success_{tariff_months}")],
-        [InlineKeyboardButton(text="◀️ Orqaga", callback_data=f"tariff_{tariff_months}")]
+        [InlineKeyboardButton(text=texts.PAY_PAID_BTN[lang], callback_data=f"mock_pay_success_{tariff_months}")],
+        [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data=f"tariff_{tariff_months}")]
     ])
     
-    text = (f"⚠️ <b>Qo'lda to'lov qilish:</b>\n\n"
-            f"Iltimos, {tariff['price']:,} UZS summani quyidagi kartaga o'tkazing:\n"
-            f"💳 <code>8600 0000 0000 0000</code>\n"
-            f"👤 Qabul qiluvchi: Ism F.\n\n"
-            f"To'lovni amalga oshirgach, <b>«To'lov qildim»</b> tugmasini bosing.")
+    text = texts.MANUAL_PAY_INFO[lang].format(price=f"{tariff['price']:,}")
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
@@ -244,6 +280,10 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     tariff_months = callback.data.split("_")[3]
     tariff = TARIFFS[tariff_months]
     user_id = callback.from_user.id
+    
+    stmt = select(User).where(User.telegram_id == user_id)
+    user = await session.scalar(stmt)
+    lang = user.language if user and user.language else "uz"
     
     # 1. Record the Payment
     payment = Payment(
@@ -260,15 +300,15 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     if admin_ids:
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"admin_conf_{payment.id}_{user_id}"),
-                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"admin_rej_{payment.id}_{user_id}")
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_conf_{payment.id}_{user_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_rej_{payment.id}_{user_id}")
             ]
         ])
-        admin_text = (f"🆕 <b>Yangi to'lov arizasi!</b>\n\n"
-                      f"Foydalanuvchi: <a href='tg://user?id={user_id}'>{callback.from_user.full_name or 'Foydalanuvchi'}</a>\n"
-                      f"Tarif: {tariff_months} oylik\n"
-                      f"Summa: {tariff['price']:,} UZS\n\n"
-                      f"Mablag' tushganligini tasdiqlang.")
+        admin_text = (f"🆕 <b>Новая заявка на оплату!</b>\n\n"
+                      f"Пользователь: <a href='tg://user?id={user_id}'>{callback.from_user.full_name or 'Пользователь'}</a>\n"
+                      f"Тариф: {tariff_months} мес.\n"
+                      f"Сумма: {tariff['price']:,} UZS\n\n"
+                      f"Подтвердите получение средств.")
         
         for a_id in admin_ids:
             try:
@@ -276,11 +316,6 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
             except Exception as e:
                 print(f"Error notifying admin {a_id}: {e}")
 
-    success_text = (
-        f"⏳ <b>Sizning arizangiz adminga yuborildi!</b>\n\n"
-        f"Admin to'lovingizni tasdiqlashi bilan sizga kanalga kirish uchun maxsus havola yuboriladi.\n"
-        f"Iltimos, kuting..."
-    )
-    await callback.message.edit_text(success_text)
+    await callback.message.edit_text(texts.PENDING_ADMIN[lang])
     await session.commit()
     await callback.answer()

@@ -73,7 +73,7 @@ async def msg_admin_guide(message: Message):
         "  - 🔗 Сгенерировать индивидуальную одноразовую ссылку.\n\n"
         "--- \n"
         "3. 📢 <b>МОДУЛЬ РАССЫЛКИ (МАРКЕТИНГ)</b>\n"
-        "1. Нажмите «📢 Создать рассылку».\n"
+        "1. Нажмите «📢 Рассылка сообщений».\n"
         "2. Выберите аудиторию:\n"
         "   - Все пользователи.\n"
         "   - Только АКТИВНЫЕ подписчики.\n"
@@ -92,23 +92,6 @@ async def msg_admin_guide(message: Message):
     await message.answer(text)
 
 # ======================== АНАЛИТИКА ========================
-def get_analytics_submenu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 За сегодня", callback_data="an_today"), InlineKeyboardButton(text="📊 За текущий месяц", callback_data="an_month")],
-        [InlineKeyboardButton(text="🌐 За всё время", callback_data="an_all"), InlineKeyboardButton(text="🔄 Когорты / Retention", callback_data="an_cohorts")],
-        [InlineKeyboardButton(text="📥 Скачать Excel", callback_data="an_report")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="an_close")]
-    ])
-
-@router.message(F.text == "📊 Аналитика")
-async def msg_admin_stats(message: Message):
-    await message.answer("📊 <b>Модуль Аналитики</b>\nВыберите нужный отчет:", reply_markup=get_analytics_submenu())
-
-@router.callback_query(F.data == "an_close")
-async def cb_an_close(callback: CallbackQuery):
-    await callback.message.delete()
-    await callback.answer()
-
 async def get_financial_report(session: AsyncSession, period_name: str, start_date=None):
     # Base query for completed payments
     stmt = select(Payment).where(Payment.status == 'completed')
@@ -141,45 +124,42 @@ async def get_financial_report(session: AsyncSession, period_name: str, start_da
         f"💵 <b>Общая касса:</b> {total_rev:,.0f} UZS\n"
         f"🛍 <b>Всего продаж:</b> {total_sales} шт.\n\n"
         f"📦 <b>Разбивка по тарифам:</b>\n"
-        f"• 1 месяц (500k): <b>{t1_qty} шт.</b> ({t1_sum:,.0f} UZS)\n"
-        f"• 3 месяца (1.2m): <b>{t3_qty} шт.</b> ({t3_sum:,.0f} UZS)\n"
-        f"• 6 месяцев (2.3m): <b>{t6_qty} шт.</b> ({t6_sum:,.0f} UZS)\n"
+        f"• 1 месяц: <b>{t1_qty} шт.</b> ({t1_sum:,.0f} UZS)\n"
+        f"• 3 месяца: <b>{t3_qty} шт.</b> ({t3_sum:,.0f} UZS)\n"
+        f"• 6 месяцев: <b>{t6_qty} шт.</b> ({t6_sum:,.0f} UZS)\n"
     )
     return text
 
-@router.callback_query(F.data == "an_today")
-async def cb_an_today(callback: CallbackQuery, session: AsyncSession):
+@router.message(F.text == "📅 Касса за сегодня")
+async def msg_an_today(message: Message, session: AsyncSession):
     now = datetime.datetime.now(datetime.timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    text = await get_financial_report(session, "📅 За сегодня", today_start)
+    text = await get_financial_report(session, "За сегодня", today_start)
     
     # Add new users count
     new_users = await session.scalar(select(func.count()).where(User.created_at >= today_start).select_from(User))
     text += f"\n🆕 <b>Новых пользователей:</b> {new_users} чел."
     
-    await callback.message.edit_text(text, reply_markup=get_analytics_submenu())
-    await callback.answer()
+    await message.answer(text)
 
-@router.callback_query(F.data == "an_month")
-async def cb_an_month(callback: CallbackQuery, session: AsyncSession):
+@router.message(F.text == "📊 Отчёт за месяц")
+async def msg_an_month(message: Message, session: AsyncSession):
     now = datetime.datetime.now(datetime.timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    text = await get_financial_report(session, "📊 За текущий месяц", month_start)
-    await callback.message.edit_text(text, reply_markup=get_analytics_submenu())
-    await callback.answer()
+    text = await get_financial_report(session, "За текущий месяц", month_start)
+    await message.answer(text)
 
-@router.callback_query(F.data == "an_all")
-async def cb_an_all(callback: CallbackQuery, session: AsyncSession):
-    text = await get_financial_report(session, "🌐 За всё время")
-    await callback.message.edit_text(text, reply_markup=get_analytics_submenu())
-    await callback.answer()
+@router.message(F.text == "🌐 За всё время")
+async def msg_an_all(message: Message, session: AsyncSession):
+    text = await get_financial_report(session, "За всё время")
+    await message.answer(text)
 
-# 2. 🔄 Когорты & Retention (an_cohorts)
-@router.callback_query(F.data == "an_cohorts")
-async def cb_an_cohorts(callback: CallbackQuery, session: AsyncSession):
-    await callback.answer("Расчет когорт...", show_alert=False)
+# 2. 🔄 Когорты & Retention
+@router.message(F.text == "🔄 Продления (Retention)")
+async def msg_an_cohorts(message: Message, session: AsyncSession):
+    wait_msg = await message.answer("🔄 <i>Расчет когортного анализа...</i>")
     # Fetch all completed payments ordered by user and date
     stmt = select(Payment.user_id, Payment.created_at).where(Payment.status == 'completed').order_by(Payment.user_id, Payment.created_at)
     res = await session.execute(stmt)
@@ -224,13 +204,13 @@ async def cb_an_cohorts(callback: CallbackQuery, session: AsyncSession):
                  f"↳ M2+ (3-й мес+): {m2} чел ({m2_pct:.1f}%)\n"
                  f"💔 Churn Rate (отток на 2-й мес): {churn:.1f}%\n\n")
                  
-    await callback.message.edit_text(text, reply_markup=get_analytics_submenu())
-    await callback.answer()
+    await wait_msg.delete()
+    await message.answer(text)
 
-# 5. 📥 Скачать Excel-отчет (an_report)
-@router.callback_query(F.data == "an_report")
-async def cb_an_report_dl(callback: CallbackQuery, session: AsyncSession, bot: Bot):
-    await callback.answer("Генерация детального отчета...", show_alert=False)
+# 5. 📥 Скачать Excel-отчет
+@router.message(F.text == "📥 Скачать Excel")
+async def msg_an_report_dl(message: Message, session: AsyncSession, bot: Bot):
+    wait_msg = await message.answer("📥 <i>Генерация детального отчета...</i>")
     
     # We need: User ID | Username | Дата первой оплаты | Текущий статус | Кол-во продлений | LTV (Сумма) | Дата окончания | Когорта
     stmt = select(User, Subscription).outerjoin(Subscription, User.telegram_id == Subscription.user_id).order_by(User.telegram_id)
@@ -276,14 +256,15 @@ async def cb_an_report_dl(callback: CallbackQuery, session: AsyncSession, bot: B
     csv_bytes = output.getvalue().encode('utf-8')
     input_file = BufferedInputFile(csv_bytes, filename=f"marketing_report_{datetime.datetime.now().strftime('%Y%m%d')}.csv")
     
-    await bot.send_document(chat_id=callback.from_user.id, document=input_file, caption="📥 Детальный маркетинговый отчет (Покупатели)")
+    await wait_msg.delete()
+    await message.answer_document(document=input_file, caption="📥 Детальный маркетинговый отчет (Покупатели)")
 
 # ======================== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ========================
-@router.message(F.text == "🔍 Найти пользователя")
+@router.message(F.text == "👥 Поиск клиента")
 async def msg_search_user(message: Message, state: FSMContext):
     await message.answer(
-        "🔍 <b>Найти пользователя</b>\n\n"
-        "Отправьте мне Telegram ID пользователя или его @username (без собачки).",
+        "🔍 <b>Найти клиента</b>\n\n"
+        "Отправьте мне Telegram ID клиента или его @username (без собачки).",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="admin_main")]])
     )
     await state.set_state(AdminUserSearch.waiting_for_query)
@@ -414,7 +395,7 @@ async def adm_user_link(callback: CallbackQuery, bot: Bot):
         await callback.answer(f"Ошибка: {e}", show_alert=True)
 
 # ======================== МОДУЛЬ РАССЫЛКИ ========================
-@router.message(F.text == "📢 Создать рассылку")
+@router.message(F.text == "📢 Рассылка сообщений")
 async def msg_admin_broadcast(message: Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Все пользователи", callback_data="bcast_all")],
