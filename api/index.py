@@ -8,7 +8,7 @@ from aiogram.types import Update
 from aiogram.client.default import DefaultBotProperties
 
 from bot.config import config
-from bot.database.db import AsyncSessionLocal
+from bot.database.db import AsyncSessionLocal, init_db
 from bot.handlers.user import router as user_router
 from api.cron import run_cron_jobs
 
@@ -23,6 +23,7 @@ dp.include_router(user_router)
 # Middleware for injecting database session
 class DBSessionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
+        await init_db()
         async with AsyncSessionLocal() as session:
             data['session'] = session
             return await handler(event, data)

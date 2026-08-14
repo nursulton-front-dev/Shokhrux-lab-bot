@@ -41,11 +41,23 @@ engine = create_async_engine(
     connect_args=connect_args
 )
 
+from bot.database.models import Base
+
 AsyncSessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
     expire_on_commit=False
 )
+
+_db_initialized = False
+
+async def init_db():
+    """Create all database tables if they do not exist."""
+    global _db_initialized
+    if not _db_initialized:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        _db_initialized = True
 
 async def get_session() -> AsyncSession:
     """Dependency for getting an async database session."""
