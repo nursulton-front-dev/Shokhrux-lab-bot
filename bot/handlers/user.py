@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from bot.database.models import User, Subscription, Payment
 from bot.states.registration import RegistrationStates
+from bot.config import config
 
 router = Router()
 
@@ -24,9 +25,9 @@ router = Router()
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1001234567890"))
 
 TARIFFS = {
-    "1": {"months": 1, "price": 150000, "days": 30},
-    "3": {"months": 3, "price": 380000, "days": 90},
-    "6": {"months": 6, "price": 700000, "days": 180}
+    "1": {"months": 1, "price": 500000, "days": 30},
+    "3": {"months": 3, "price": 1200000, "days": 90},
+    "6": {"months": 6, "price": 2300000, "days": 180}
 }
 
 @router.message(CommandStart())
@@ -45,15 +46,26 @@ async def cmd_start(message: Message, session: AsyncSession):
         session.add(user)
         await session.commit()
 
+    support_btn = InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{config.support_username}") if config.support_username else InlineKeyboardButton(text="💬 Поддержка", callback_data="support_info")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚀 Начать / Оформить подписку", callback_data="start_sub"),
-            InlineKeyboardButton(text="ℹ️ О канале", callback_data="about_channel")
+            InlineKeyboardButton(text="🚀 Оформить подписку", callback_data="start_sub")
+        ],
+        [
+            InlineKeyboardButton(text="ℹ️ О канале", callback_data="about_channel"),
+            support_btn
         ]
     ])
     
+    welcome_text = (
+        "🌟 <b>Добро пожаловать в наше закрытое сообщество!</b>\n\n"
+        "Здесь вы получите доступ к эксклюзивной аналитике, инсайдерской информации и лучшим материалам, "
+        "которые помогут вам кратно вырасти. Наш канал — это сообщество единомышленников и профессионалов.\n\n"
+        "🔥 <i>Не упустите шанс стать частью закрытого клуба!</i> Выберите подходящий тариф и присоединяйтесь прямо сейчас."
+    )
+    
     await message.answer(
-        "Добро пожаловать в наше закрытое сообщество! Здесь вы найдете эксклюзивный контент.",
+        welcome_text,
         reply_markup=keyboard
     )
 
@@ -115,9 +127,9 @@ async def process_phone_invalid(message: Message):
 
 async def show_tariffs(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 Месяц — 150,000 UZS", callback_data="tariff_1")],
-        [InlineKeyboardButton(text="3 Месяца — 380,000 UZS", callback_data="tariff_3")],
-        [InlineKeyboardButton(text="6 Месяцев — 700,000 UZS", callback_data="tariff_6")]
+        [InlineKeyboardButton(text="1 Месяц — 500,000 UZS", callback_data="tariff_1")],
+        [InlineKeyboardButton(text="3 Месяца — 1,200,000 UZS", callback_data="tariff_3")],
+        [InlineKeyboardButton(text="6 Месяцев — 2,300,000 UZS", callback_data="tariff_6")]
     ])
     await message.answer("Выберите подходящий тариф:", reply_markup=keyboard)
 
@@ -127,13 +139,15 @@ async def cb_tariff_selected(callback: CallbackQuery):
     tariff = TARIFFS[tariff_months]
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Перейти к оплате", callback_data=f"pay_{tariff_months}")]
+        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"pay_{tariff_months}")]
     ])
     
-    text = (f"🧾 Детали заказа:\n"
+    text = (f"🧾 <b>Детали заказа:</b>\n"
             f"Тариф: {tariff_months} мес.\n"
             f"Сумма: {tariff['price']:,} UZS\n\n"
-            f"Нажмите кнопку ниже, чтобы перейти к оплате.")
+            f"⚠️ <b>Внимание:</b> Оплата принимается в ручном режиме (временно, до 1 сентября).\n"
+            f"Пожалуйста, переведите указанную сумму на карту: <code>8600 0000 0000 0000</code> (Получатель: Имя Ф.)\n\n"
+            f"После перевода нажмите кнопку <b>«Я оплатил»</b>.")
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
@@ -148,9 +162,10 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
         user_id=user_id,
         amount=tariff['price'],
         tariff_months=int(tariff_months),
-        status="completed"
+        status="pending"
     )
     session.add(payment)
+    await session.flush()
     
     # 2. Update or Create Subscription
     stmt = select(Subscription).where(
@@ -182,7 +197,25 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     session.add(subscription)
     await session.commit()
     
-    # 3. Generate Single-Use Invite Link
+    # 3. Notify Admin
+    if config.admin_id:
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_conf_{payment.id}_{user_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_rej_{payment.id}_{user_id}")
+            ]
+        ])
+        admin_text = (f"🆕 <b>Новая заявка на оплату!</b>\n\n"
+                      f"Пользователь: <a href='tg://user?id={user_id}'>{callback.from_user.full_name or 'Пользователь'}</a>\n"
+                      f"Тариф: {tariff_months} мес.\n"
+                      f"Сумма: {tariff['price']:,} UZS\n\n"
+                      f"Подтвердите получение средств.")
+        try:
+            await bot.send_message(chat_id=config.admin_id, text=admin_text, reply_markup=admin_kb)
+        except Exception as e:
+            print(f"Error notifying admin: {e}")
+
+    # 4. Generate Single-Use Invite Link
     try:
         invite_link = await bot.create_chat_invite_link(
             chat_id=CHANNEL_ID,
@@ -197,10 +230,70 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     date_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
     
     success_text = (
-        f"✅ Оплата успешно получена!\n\n"
-        f"Ваша подписка активна до {date_str}.\n\n"
-        f"🔗 Ваш персональный одноразовый линк для входа:\n{link}\n\n"
+        f"⏳ <b>Ваша заявка отправлена администратору!</b>\n\n"
+        f"Тем не менее, вы можете войти в канал прямо сейчас.\n"
+        f"Ваша подписка предварительно активна до {date_str}.\n"
+        f"⚠️ <i>Если оплата не будет подтверждена администратором, вы будете автоматически исключены.</i>\n\n"
+        f"🔗 <b>Ваш персональный одноразовый линк для входа:</b>\n{link}\n\n"
         f"Никому не передавайте этот линк. Он действителен только для одного входа."
     )
     await callback.message.edit_text(success_text)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_conf_"))
+async def admin_confirm_payment(callback: CallbackQuery, session: AsyncSession):
+    _, _, payment_id, user_id = callback.data.split("_")
+    
+    stmt = select(Payment).where(Payment.id == int(payment_id))
+    result = await session.execute(stmt)
+    payment = result.scalar_one_or_none()
+    
+    if payment and payment.status == "pending":
+        payment.status = "completed"
+        await session.commit()
+        await callback.message.edit_text(callback.message.html_text + "\n\n✅ <b>Оплата подтверждена.</b>")
+    else:
+        await callback.message.edit_text("Платеж не найден или уже обработан.")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_rej_"))
+async def admin_reject_payment(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+    _, _, payment_id, user_id = callback.data.split("_")
+    user_id = int(user_id)
+    
+    stmt = select(Payment).where(Payment.id == int(payment_id))
+    result = await session.execute(stmt)
+    payment = result.scalar_one_or_none()
+    
+    if payment and payment.status == "pending":
+        payment.status = "failed"
+        
+        # Mark recent subscription as expired
+        sub_stmt = select(Subscription).where(
+            Subscription.user_id == user_id,
+            Subscription.status == "active"
+        ).order_by(Subscription.expires_at.desc()).limit(1)
+        sub_result = await session.execute(sub_stmt)
+        sub = sub_result.scalar_one_or_none()
+        
+        if sub:
+            sub.status = "expired"
+            
+        await session.commit()
+        
+        # Kick user
+        try:
+            await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        except Exception as e:
+            print(f"Failed to kick user {user_id}: {e}")
+            
+        await callback.message.edit_text(callback.message.html_text + "\n\n❌ <b>Оплата отклонена. Пользователь исключен.</b>")
+    else:
+        await callback.message.edit_text("Платеж не найден или уже обработан.")
+    await callback.answer()
+
+@router.callback_query(F.data == "support_info")
+async def cb_support_info(callback: CallbackQuery):
+    await callback.message.answer("Для связи с поддержкой напишите нашему администратору.")
     await callback.answer()
