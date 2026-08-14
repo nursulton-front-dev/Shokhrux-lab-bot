@@ -4,7 +4,7 @@ from sqlalchemy import select
 from aiogram import Bot
 
 from bot.database.models import Subscription, Payment
-from bot.database.db import AsyncSessionLocal, init_db
+from bot.database.db import AsyncSessionLocal, init_db, engine
 
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1001234567890"))
 
@@ -12,8 +12,9 @@ async def run_cron_jobs(bot: Bot):
     """
     Checks for expired subscriptions, kicks members, sends reminders, and kicks unconfirmed.
     """
-    await init_db()
-    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        await init_db()
+        now = datetime.datetime.now(datetime.timezone.utc)
     target_3d = now + datetime.timedelta(days=3)
     target_1d = now + datetime.timedelta(days=1)
     unconfirmed_limit = now - datetime.timedelta(hours=24)
@@ -111,3 +112,5 @@ async def run_cron_jobs(bot: Bot):
                 sub.status = "expired"
                 
         await session.commit()
+    finally:
+        await engine.dispose()

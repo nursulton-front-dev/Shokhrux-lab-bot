@@ -31,13 +31,15 @@ if sslmode_key:
     parsed = parsed._replace(query=new_query)
     db_url = urlunparse(parsed)
 
+from sqlalchemy.pool import NullPool
+
 # Neon serverless environments recommend pool_pre_ping=True
-# Some deployment models prefer no pooling at the driver level (poolclass=NullPool) 
-# if using an external connection pooler like PgBouncer.
+# In serverless environments (Vercel), use NullPool to prevent connection pooling across closed event loops
 engine = create_async_engine(
     db_url,
     echo=False,
     pool_pre_ping=True,
+    poolclass=NullPool,
     connect_args=connect_args
 )
 

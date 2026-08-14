@@ -8,7 +8,7 @@ from aiogram.types import Update
 from aiogram.client.default import DefaultBotProperties
 
 from bot.config import config
-from bot.database.db import AsyncSessionLocal, init_db
+from bot.database.db import AsyncSessionLocal, init_db, engine
 from bot.handlers.user import router as user_router
 from api.cron import run_cron_jobs
 
@@ -29,6 +29,12 @@ class DBSessionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
 dp.update.middleware(DBSessionMiddleware())
+
+async def process_update(update: Update):
+    try:
+        await dp.feed_update(bot=bot, update=update)
+    finally:
+        await engine.dispose()
 
 class handler(BaseHTTPRequestHandler):
     """
@@ -68,7 +74,7 @@ class handler(BaseHTTPRequestHandler):
                 update = Update(**update_dict)
                 
                 # Process the update synchronously within the serverless invocation
-                asyncio.run(dp.feed_update(bot=bot, update=update))
+                asyncio.run(process_update(update))
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
