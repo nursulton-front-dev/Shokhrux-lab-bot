@@ -12,19 +12,14 @@ from bot.database.db import AsyncSessionLocal, init_db, engine
 from bot.handlers.user import router as user_router
 from api.cron import run_cron_jobs
 
-from aiogram.utils.token import validate_token
+def get_validated_token() -> str:
+    bot_token = config.bot_token
+    try:
+        validate_token(bot_token)
+        return bot_token
+    except Exception:
+        return "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
-# Safely initialize Bot with fallback to prevent import errors on invalid tokens
-bot_token = config.bot_token
-try:
-    validate_token(bot_token)
-except Exception:
-    bot_token = "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-
-bot = Bot(
-    token=bot_token,
-    default=DefaultBotProperties(parse_mode="HTML")
-)
 dp = Dispatcher()
 dp.include_router(user_router)
 
@@ -39,10 +34,20 @@ class DBSessionMiddleware(BaseMiddleware):
 dp.update.middleware(DBSessionMiddleware())
 
 async def process_update(update: Update):
-    try:
-        await dp.feed_update(bot=bot, update=update)
-    finally:
-        await engine.dispose()
+    bot_token = get_validated_token()
+    async with Bot(token=bot_token, default=DefaultBotProperties(parse_mode="HTML")) as bot:
+        try:
+            await dp.feed_update(bot=bot, update=update)
+        finally:
+            await engine.dispose()
+
+async def process_cron():
+    bot_token = get_validated_token()
+    async with Bot(token=bot_token, default=DefaultBotProperties(parse_mode="HTML")) as bot:
+        try:
+            await run_cron_jobs(bot)
+        finally:
+            await engine.dispose()
 
 class handler(BaseHTTPRequestHandler):
     """
@@ -53,7 +58,7 @@ class handler(BaseHTTPRequestHandler):
         
         if parsed_path.path == '/api/cron':
             try:
-                asyncio.run(run_cron_jobs(bot))
+                asyncio.run(process_cron())
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
