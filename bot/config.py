@@ -2,8 +2,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 class Settings(BaseSettings):
-    bot_token: str
-    database_url: str
+    bot_token: str = "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    database_url: str = "postgresql+asyncpg://user:pass@localhost/db"
     webhook_url: Optional[str] = None
     webhook_secret: Optional[str] = None
     admin_id: Optional[int] = None

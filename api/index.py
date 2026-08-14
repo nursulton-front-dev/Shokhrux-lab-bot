@@ -12,9 +12,17 @@ from bot.database.db import AsyncSessionLocal, init_db, engine
 from bot.handlers.user import router as user_router
 from api.cron import run_cron_jobs
 
-# Initialize Aiogram Bot and Dispatcher
+from aiogram.utils.token import validate_token
+
+# Safely initialize Bot with fallback to prevent import errors on invalid tokens
+bot_token = config.bot_token
+try:
+    validate_token(bot_token)
+except Exception:
+    bot_token = "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 bot = Bot(
-    token=config.bot_token,
+    token=bot_token,
     default=DefaultBotProperties(parse_mode="HTML")
 )
 dp = Dispatcher()
