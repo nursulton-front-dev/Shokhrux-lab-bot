@@ -10,7 +10,7 @@ from aiogram.types import (
     KeyboardButton, 
     ReplyKeyboardRemove
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from sqlalchemy import select
 from bot.database.models import User, Subscription, Payment
 from bot.states.registration import RegistrationStates
 from bot.config import config
+from bot.services.rahmat import generate_invoice_link
 
 router = Router()
 
@@ -29,6 +30,15 @@ TARIFFS = {
     "3": {"months": 3, "price": 1200000, "days": 90},
     "6": {"months": 6, "price": 2300000, "days": 180}
 }
+
+def main_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👤 Mening profilim"), KeyboardButton(text="🚀 Obuna bo'lish")],
+            [KeyboardButton(text="💬 Yordam")]
+        ],
+        resize_keyboard=True
+    )
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession):
@@ -45,52 +55,90 @@ async def cmd_start(message: Message, session: AsyncSession):
         )
         session.add(user)
         await session.commit()
-
-    support_btn = InlineKeyboardButton(text="💬 Qõllab-quvvatlash", url=f"https://t.me/{config.support_username}") if config.support_username else InlineKeyboardButton(text="💬 Qõllab-quvvatlash", callback_data="support_info")
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🚀 Obunani rasmiylashtirish", callback_data="start_sub")
-        ],
-        [
-            InlineKeyboardButton(text="ℹ️ Kanal haqida", callback_data="about_channel"),
-            support_btn
-        ]
-    ])
     
     welcome_text = (
-        "🔥 <b>Shokhrux Lab — orzuingizdagi qomatga erishish vaqti keldi!</b>\n\n"
-        "Bu shunchaki kanal emas, bu sizning <b>ozish va sog'lom hayot</b> sari transformatsiya markazingiz.\n"
-        "Sizni nimalar kutmoqda:\n"
-        "🏋️‍♂️ Samarali va sinalgan mashqlar dasturi\n"
-        "🥗 To'g'ri ovqatlanish sirlari va parhezlar\n"
-        "🔥 Tez va xavfsiz vazn tashlash texnikalari\n"
-        "💪 Motivatsiya va kunlik qo'llab-quvvatlash!\n\n"
-        "O'zgarishni bugundan boshlang! Mos tarifni tanlang va bizning jamoaga qo'shiling. 👇"
+        "🌟 <b>Arzanda qomat va sog'lom hayot sari xush kelibsiz!</b>\n\n"
+        "Siz shunchaki kanalga emas, balki haqiqiy natijalarga erishishingizga yordam beruvchi yopiq fitnes-klubga taklifnoma oldingiz!\n\n"
+        "Bu yerda internetdagi quruq va foydasiz maslahatlar emas, balki aniq ishlaydigan tizimni qo'lga kiritasiz:\n\n"
+        "🏋️‍♂️ <b>Yopiq kanalimizda sizni nimalar kutmoqda?</b>\n\n"
+        "• Ozish va mushak massasini yig'ish uchun samarali mashg'ulot dasturlari\n\n"
+        "• Ortikcha vazndan xalos bo'lish uchun shaxsiy va mazali taomnoma (PP-retseptlar)\n\n"
+        "• Moddalar almashinuvini tezlashtirish hamda natijani saqlab qolish sirlari\n\n"
+        "• Sizni to'xtab qolishga yo'l qo'ymaydigan kuchli motivatsiya va hamjamiyat\n\n"
+        "🔥 Ortiqcha vazndan xalos bo'lib, o'zingizning eng yaxshi versiyangizni kashf etish vaqti keldi!\n\n"
+        "O'zingizga mos tarifni tanlang va hoziroq safimizga qo'shiling 👇"
     )
     
     await message.answer(
         welcome_text,
-        reply_markup=keyboard
+        reply_markup=main_menu_keyboard()
     )
+    await show_tariffs(message)
 
-@router.callback_query(F.data == "about_channel")
-async def cb_about_channel(callback: CallbackQuery):
-    await callback.message.answer("Bu yopiq kanalda siz ortiqcha vazndan qutilish, to'g'ri ovqatlanish va uy sharoitida (yoki zalda) shug'ullanish uchun eng zo'r dasturlarga ega bo'lasiz. Natijangiz kafolatlangan! 💪 Obunani rasmiylashtiring va safiga qo'shiling.")
-    await callback.answer()
+@router.message(F.text == "💬 Yordam")
+async def msg_support(message: Message):
+    if config.support_username:
+        await message.answer(f"Savollaringiz bo'lsa, yordamchi administrator bilan bog'laning: @{config.support_username}")
+    else:
+        await message.answer("Qo'llab-quvvatlash markazi bilan bog'lanish uchun adminimizga yozing.")
+
+@router.message(Command("profile"))
+@router.message(F.text == "👤 Mening profilim")
+async def msg_profile(message: Message, session: AsyncSession):
+    user_id = message.from_user.id
+    
+    stmt = select(Subscription).where(
+        Subscription.user_id == user_id,
+        Subscription.status == "active"
+    ).order_by(Subscription.expires_at.desc()).limit(1)
+    
+    result = await session.execute(stmt)
+    current_sub = result.scalar_one_or_none()
+    
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    if current_sub and current_sub.expires_at > now:
+        status_emoji = "✅"
+        status_text = "FAOL"
+        expires_at_str = current_sub.expires_at.strftime("%Y-%m-%d %H:%M")
+    else:
+        status_emoji = "❌"
+        status_text = "MUDDATI TUGAGAN (yoki yo'q)"
+        expires_at_str = "-"
+        
+    text = (
+        f"👤 <b>Sizning profilingiz</b>\n\n"
+        f"🆔 ID: <code>{user_id}</code>\n\n"
+        f"📊 Status: {status_emoji} {status_text}\n\n"
+        f"⏳ Obuna tugash sanasi: {expires_at_str}\n\n"
+        f"💡 Obunangiz muddatini istalgan vaqtda uzaytirishingiz mumkin."
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Obunani uzaytirish / Xarid", callback_data="start_sub")]
+    ])
+    
+    await message.answer(text, reply_markup=kb)
+
+@router.message(F.text == "🚀 Obuna bo'lish")
+async def msg_subscribe(message: Message, session: AsyncSession, state: FSMContext):
+    await check_registration_and_show_tariffs(message.from_user.id, message, session, state)
 
 @router.callback_query(F.data == "start_sub")
 async def cb_start_sub(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
-    stmt = select(User).where(User.telegram_id == callback.from_user.id)
+    await check_registration_and_show_tariffs(callback.from_user.id, callback.message, session, state)
+    await callback.answer()
+
+async def check_registration_and_show_tariffs(user_id: int, message_obj: Message, session: AsyncSession, state: FSMContext):
+    stmt = select(User).where(User.telegram_id == user_id)
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
     
-    # Check if we need to collect additional info
     if not user or not user.full_name or not user.phone_number:
-        await callback.message.answer("Obunani rasmiylashtirish uchun, iltimos, Ismingiz va Familiyangizni kiriting:")
+        await message_obj.answer("Obunani rasmiylashtirish uchun, iltimos, Ismingiz va Familiyangizni kiriting:")
         await state.set_state(RegistrationStates.waiting_for_name)
     else:
-        await show_tariffs(callback.message)
-    await callback.answer()
+        await show_tariffs(message_obj)
 
 @router.message(RegistrationStates.waiting_for_name, F.text)
 async def process_name(message: Message, state: FSMContext):
@@ -120,14 +168,10 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
         user.phone_number = phone_number
         await session.commit()
     
-    await message.answer("✅ Ma'lumotlaringiz muvaffaqiyatli saqlandi!", reply_markup=ReplyKeyboardRemove())
+    await message.answer("✅ Ma'lumotlaringiz muvaffaqiyatli saqlandi!", reply_markup=main_menu_keyboard())
     await state.clear()
     
     await show_tariffs(message)
-
-@router.message(RegistrationStates.waiting_for_phone)
-async def process_phone_invalid(message: Message):
-    await message.answer("Iltimos, raqamni yuborish uchun pastdagi tugmadan foydalaning.")
 
 async def show_tariffs(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -138,26 +182,66 @@ async def show_tariffs(message: Message):
     await message.answer("O'zingizga mos tarifni tanlang:", reply_markup=keyboard)
 
 @router.callback_query(F.data.startswith("tariff_"))
-async def cb_tariff_selected(callback: CallbackQuery):
+async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
     tariff_months = callback.data.split("_")[1]
     tariff = TARIFFS[tariff_months]
     
+    # Calculate expiry date
+    user_id = callback.from_user.id
+    sub_stmt = select(Subscription).where(
+        Subscription.user_id == user_id,
+        Subscription.status == "active"
+    ).order_by(Subscription.expires_at.desc()).limit(1)
+    
+    result = await session.execute(sub_stmt)
+    current_sub = result.scalar_one_or_none()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if current_sub and current_sub.expires_at > now:
+        expires_at = current_sub.expires_at + datetime.timedelta(days=tariff['days'])
+    else:
+        expires_at = now + datetime.timedelta(days=tariff['days'])
+        
+    expiry_date_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ To'lov qildim", callback_data=f"pay_{tariff_months}")]
+        [InlineKeyboardButton(text="💳 To'lov qilish", callback_data=f"pay_manual_{tariff_months}")],
+        [InlineKeyboardButton(text="◀️ Orqaga", callback_data="start_sub")]
     ])
     
-    text = (f"🧾 <b>Buyurtma tafsilotlari:</b>\n"
-            f"Tarif: {tariff_months} oylik\n"
-            f"Summa: {tariff['price']:,} UZS\n\n"
-            f"⚠️ <b>Diqqat:</b> To'lov hozircha faqat karta orqali (qo'lda) qabul qilinadi.\n"
-            f"Iltimos, ko'rsatilgan summani quyidagi kartaga o'tkazing: <code>8600 0000 0000 0000</code> (Qabul qiluvchi: Ism F.)\n\n"
+    text = (
+        f"💳 <b>{tariff_months} oylik tarifi tanlandi</b>\n\n"
+        f"💰 To'lov miqdori: <b>{tariff['price']:,} UZS</b>\n\n"
+        f"⏳ Obuna tugash sanasi: <b>{expiry_date_str}</b>\n\n"
+        f"⚡️ <b>To'lov usullari:</b>\n\n"
+        f"Payme, Click, Uzum Bank yoki bank kartalari (Uzcard / Humo) orqali bir zumda to'lashingiz mumkin.\n\n"
+        f"To'lovni amalga oshirish uchun pastdagi «To'lov qilish» tugmasini bosing.\n\n"
+        f"To'lov tasdiqlanishi bilan bot sizga avtomatik ravishda yopiq fitnes-kanalga bir marta ishlatiladigan taklifnoma havolasini yuboradi!"
+    )
+            
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("pay_manual_"))
+async def cb_pay_manual(callback: CallbackQuery):
+    tariff_months = callback.data.split("_")[2]
+    tariff = TARIFFS[tariff_months]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ To'lov qildim", callback_data=f"mock_pay_success_{tariff_months}")],
+        [InlineKeyboardButton(text="◀️ Orqaga", callback_data=f"tariff_{tariff_months}")]
+    ])
+    
+    text = (f"⚠️ <b>Qo'lda to'lov qilish:</b>\n\n"
+            f"Iltimos, {tariff['price']:,} UZS summani quyidagi kartaga o'tkazing:\n"
+            f"💳 <code>8600 0000 0000 0000</code>\n"
+            f"👤 Qabul qiluvchi: Ism F.\n\n"
             f"To'lovni amalga oshirgach, <b>«To'lov qildim»</b> tugmasini bosing.")
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
-@router.callback_query(F.data.startswith("pay_"))
+@router.callback_query(F.data.startswith("mock_pay_success_"))
 async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
-    tariff_months = callback.data.split("_")[1]
+    tariff_months = callback.data.split("_")[3]
     tariff = TARIFFS[tariff_months]
     user_id = callback.from_user.id
     
@@ -171,37 +255,7 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     session.add(payment)
     await session.flush()
     
-    # 2. Update or Create Subscription
-    stmt = select(Subscription).where(
-        Subscription.user_id == user_id,
-        Subscription.status == "active"
-    ).order_by(Subscription.expires_at.desc()).limit(1)
-    
-    result = await session.execute(stmt)
-    current_sub = result.scalar_one_or_none()
-    
-    now = datetime.datetime.now(datetime.timezone.utc)
-    
-    if current_sub and current_sub.expires_at > now:
-        # Extend existing active subscription
-        started_at = current_sub.expires_at
-        expires_at = started_at + datetime.timedelta(days=tariff['days'])
-    else:
-        # Create a brand new subscription
-        started_at = now
-        expires_at = now + datetime.timedelta(days=tariff['days'])
-        
-    subscription = Subscription(
-        user_id=user_id,
-        status="active",
-        tariff_months=int(tariff_months),
-        started_at=started_at,
-        expires_at=expires_at
-    )
-    session.add(subscription)
-    await session.commit()
-    
-    # 3. Notify Admins
+    # 2. Notify Admins for manual confirmation
     admin_ids = config.get_admin_ids
     if admin_ids:
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -222,90 +276,11 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
             except Exception as e:
                 print(f"Error notifying admin {a_id}: {e}")
 
-    # 4. Generate Single-Use Invite Link
-    try:
-        channel_id = get_channel_id()
-        invite_link = await bot.create_chat_invite_link(
-            chat_id=channel_id,
-            member_limit=1,
-            name=f"Sub: {user_id} ({tariff_months}mo)"
-        )
-        link = invite_link.invite_link
-    except Exception as e:
-        print(f"Error creating invite link: {e}")
-        if "chat not found" in str(e).lower():
-            link = "⚠️ XATOLIK: Kanal topilmadi. .env faylida CHANNEL_ID noto'g'ri ko'rsatilgan!"
-        else:
-            link = f"⚠️ XATOLIK: {e}"
-        
-    date_str = expires_at.strftime("%Y-%m-%d %H:%M UTC")
-    
     success_text = (
         f"⏳ <b>Sizning arizangiz adminga yuborildi!</b>\n\n"
-        f"To'lov tasdiqlanishini kutmasdan, kanalga hoziroq qo'shilishingiz mumkin.\n"
-        f"Sizning obunangiz vaqtincha {date_str} gacha faol.\n"
-        f"⚠️ <i>Agar to'lov admin tomonidan tasdiqlanmasa, siz avtomatik ravishda kanaldan chiqarilasiz.</i>\n\n"
-        f"🔗 <b>Sizning shaxsiy bir martalik kirish havolangiz:</b>\n{link}\n\n"
-        f"Bu havolani hech kimga bermang. U faqat bir marta kirish uchun ishlaydi."
+        f"Admin to'lovingizni tasdiqlashi bilan sizga kanalga kirish uchun maxsus havola yuboriladi.\n"
+        f"Iltimos, kuting..."
     )
     await callback.message.edit_text(success_text)
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("admin_conf_"))
-async def admin_confirm_payment(callback: CallbackQuery, session: AsyncSession):
-    _, _, payment_id, user_id = callback.data.split("_")
-    
-    stmt = select(Payment).where(Payment.id == int(payment_id))
-    result = await session.execute(stmt)
-    payment = result.scalar_one_or_none()
-    
-    if payment and payment.status == "pending":
-        payment.status = "completed"
-        await session.commit()
-        await callback.message.edit_text(callback.message.html_text + "\n\n✅ <b>To'lov tasdiqlandi.</b>")
-    else:
-        await callback.message.edit_text("To'lov topilmadi yoki allaqachon ko'rib chiqilgan.")
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("admin_rej_"))
-async def admin_reject_payment(callback: CallbackQuery, session: AsyncSession, bot: Bot):
-    _, _, payment_id, user_id = callback.data.split("_")
-    user_id = int(user_id)
-    
-    stmt = select(Payment).where(Payment.id == int(payment_id))
-    result = await session.execute(stmt)
-    payment = result.scalar_one_or_none()
-    
-    if payment and payment.status == "pending":
-        payment.status = "failed"
-        
-        # Mark recent subscription as expired
-        sub_stmt = select(Subscription).where(
-            Subscription.user_id == user_id,
-            Subscription.status == "active"
-        ).order_by(Subscription.expires_at.desc()).limit(1)
-        sub_result = await session.execute(sub_stmt)
-        sub = sub_result.scalar_one_or_none()
-        
-        if sub:
-            sub.status = "expired"
-            
-        await session.commit()
-        
-        # Kick user
-        try:
-            channel_id = get_channel_id()
-            await bot.ban_chat_member(chat_id=channel_id, user_id=user_id)
-            await bot.unban_chat_member(chat_id=channel_id, user_id=user_id)
-        except Exception as e:
-            print(f"Failed to kick user {user_id}: {e}")
-            
-        await callback.message.edit_text(callback.message.html_text + "\n\n❌ <b>To'lov rad etildi. Foydalanuvchi kanaldan chiqarildi.</b>")
-    else:
-        await callback.message.edit_text("To'lov topilmadi yoki allaqachon ko'rib chiqilgan.")
-    await callback.answer()
-
-@router.callback_query(F.data == "support_info")
-async def cb_support_info(callback: CallbackQuery):
-    await callback.message.answer("Qo'llab-quvvatlash markazi bilan bog'lanish uchun adminimizga yozing.")
+    await session.commit()
     await callback.answer()

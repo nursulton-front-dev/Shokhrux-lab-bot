@@ -45,7 +45,13 @@ async def run_cron_jobs(bot: Bot):
                 try:
                     await bot.send_message(
                         chat_id=sub.user_id,
-                        text="Afsuski, obunangiz muddati tugadi va siz kanaldan chiqarildingiz. Istalgan vaqtda obunangizni uzaytirishingiz mumkin!"
+                        text=(
+                            "😔 <b>Obuna muddatingiz tugadi.</b>\n\n"
+                            "Siz yopiq fitnes-kanaldan vaqtincha chiqarildingiz.\n\n"
+                            "🤝 Formangizni yaxshilash va vazn tashlashga hech qachon kech emas!\n\n"
+                            "Istalgan vaqtda tarifni qayta tanlab, yopiq klubimizga va mashg'ulotlarga qaytishingiz mumkin.\n\n"
+                            "Qayta qo'shilish uchun /start buyrug'ini yuboring!"
+                        )
                     )
                 except Exception as e:
                     logger.error(f"Failed to notify user {sub.user_id} about expiration: {e}")
@@ -60,9 +66,15 @@ async def run_cron_jobs(bot: Bot):
             reminder_3d_result = await session.execute(reminder_3d_stmt)
             for sub in reminder_3d_result.scalars().all():
                 try:
+                    expiry_date_str = sub.expires_at.strftime("%Y-%m-%d %H:%M")
                     await bot.send_message(
                         chat_id=sub.user_id,
-                        text="Diqqat! Kanalga obunangiz 3 kundan so'ng tugaydi. Ruxsatni yo'qotmaslik uchun uni uzaytirishni unutmang."
+                        text=(
+                            "⏰ <b>Yopiq fitnes-klubga obunangiz tugashiga 3 kun qoldi!</b>\n\n"
+                            f"Sizning obunangiz {expiry_date_str} kuni yakuniga yetadi.\n\n"
+                            "Erishgan natijalaringizni yo'qotmaslik hamda mashg'ulotlar va taomnomani uzluksiz davom ettirish uchun obunangizni hoziroq uzaytiring! 🏋️‍♂️\n\n"
+                            "🔄 Hozir uzaytirsangiz, yangi muddat joriy obunangiz tugagan vaqtdan boshlab qo'shiladi."
+                        )
                     )
                     sub.notified_3d = True
                 except Exception as e:
@@ -78,9 +90,14 @@ async def run_cron_jobs(bot: Bot):
             reminder_1d_result = await session.execute(reminder_1d_stmt)
             for sub in reminder_1d_result.scalars().all():
                 try:
+                    expiry_date_str = sub.expires_at.strftime("%Y-%m-%d %H:%M")
                     await bot.send_message(
                         chat_id=sub.user_id,
-                        text="⏳ Diqqat! Kanalga obunangiz 24 soatdan so'ng tugaydi. Eksklyuziv kontentdan quruq qolmaslik uchun uni hoziroq uzaytiring."
+                        text=(
+                            "🔥 <b>Diqqat! Obunangiz 24 soatdan keyin tugaydi!</b>\n\n"
+                            f"Ertaga {expiry_date_str} vaqti bilan obunangiz o'z nihoyasiga yetadi.\n\n"
+                            "Go'zal tana va natijalar sari tashlangan qadamingiz to'xtab qolmasin! Kanalga kirish uchun «Obunani uzaytirish» menyusidan foydalaning 👇"
+                        )
                     )
                     sub.notified_1d = True
                     sub.notified_3d = True

@@ -46,17 +46,23 @@ async def main():
     await init_db()
     logger.info("Database schema initialized successfully.")
     
-    # 4. Remove any existing Webhooks to allow Long Polling
-    logger.info("Deleting old webhooks and clearing pending updates...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # 5. Start Background Scheduler Task
-    asyncio.create_task(start_scheduler(bot))
-    
-    # 6. Start Polling
-    logger.info("Starting Long Polling...")
+    # 4. Start Bot with retry loop
     try:
-        await dp.start_polling(bot)
+        while True:
+            try:
+                logger.info("Deleting old webhooks and clearing pending updates...")
+                await bot.delete_webhook(drop_pending_updates=True)
+                
+                # Start background tasks
+                logger.info("Starting background scheduler...")
+                asyncio.create_task(start_scheduler(bot))
+                
+                logger.info("Starting Long Polling...")
+                await dp.start_polling(bot)
+                break # Exit loop if polling ends gracefully
+            except Exception as e:
+                logger.error(f"Network error during bot startup/polling: {e}. Retrying in 5 seconds...")
+                await asyncio.sleep(5)
     finally:
         await bot.session.close()
 
@@ -64,4 +70,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped.")
+        logger.info("Bot process stopped gracefully.")

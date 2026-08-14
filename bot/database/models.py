@@ -17,6 +17,7 @@ class User(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    language: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     
     subscriptions: Mapped[List["Subscription"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
