@@ -9,10 +9,15 @@ if db_url.startswith("postgres://"):
 elif db_url.startswith("postgresql://"):
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Fix asyncpg incompatibility with sslmode URL query parameter
+# Fix asyncpg incompatibility with sslmode and channel_binding URL query parameters
 connect_args = {}
 parsed = urlparse(db_url)
 query_params = parse_qs(parsed.query)
+
+# Remove channel_binding if present (unsupported by asyncpg)
+keys_to_remove = [k for k in query_params if k.lower() in ("channel_binding", "gssencmode")]
+for k in keys_to_remove:
+    query_params.pop(k)
 
 sslmode_key = None
 for k in query_params:
@@ -27,19 +32,15 @@ if sslmode_key:
     elif sslmode_val.lower() == "disable":
         connect_args["ssl"] = False
 
-    new_query = urlencode(query_params, doseq=True)
-    parsed = parsed._replace(query=new_query)
-    db_url = urlunparse(parsed)
+new_query = urlencode(query_params, doseq=True)
+parsed = parsed._replace(query=new_query)
+db_url = urlunparse(parsed)
 
-from sqlalchemy.pool import NullPool
-
-# Neon serverless environments recommend pool_pre_ping=True
-# In serverless environments (Vercel), use NullPool to prevent connection pooling across closed event loops
+# Engine configuration for PostgreSQL (Neon.tech compatible)
 engine = create_async_engine(
     db_url,
     echo=False,
     pool_pre_ping=True,
-    poolclass=NullPool,
     connect_args=connect_args
 )
 
