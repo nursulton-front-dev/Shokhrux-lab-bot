@@ -1,14 +1,45 @@
+"""Idempotent additive migration. Failures must fail deployment visibly."""
 import asyncio
-from bot.database.db import engine
+
 from sqlalchemy import text
 
-async def main():
-    async with engine.begin() as conn:
-        try:
-            await conn.execute(text("ALTER TABLE users ADD COLUMN language VARCHAR(5);"))
-            print("Successfully added 'language' column to 'users' table.")
-        except Exception as e:
-            print(f"Error (maybe already exists): {e}")
+from bot.database.db import engine, init_db
+
+
+async def main() -> None:
+    try:
+        await init_db()
+        columns = (
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS language VARCHAR(5)",
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS invite_link VARCHAR",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS balance INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS cashback_applied INTEGER DEFAULT 0",
+            "ALTER TABLE user_fitness_profiles ADD COLUMN IF NOT EXISTS initial_weight_kg DOUBLE PRECISION",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_file_id VARCHAR",
+            "ALTER TABLE user_fitness_profiles ADD COLUMN IF NOT EXISTS gender VARCHAR DEFAULT 'M'",
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS vip_invite_link VARCHAR",
+            "ALTER TABLE payments ADD COLUMN IF NOT EXISTS request_key VARCHAR(160)",
+        )
+        async with engine.begin() as conn:
+            # Bound the wait for live traffic, instead of blocking deployment forever.
+            await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
+            for statement in columns:
+                await conn.execute(text(statement))
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            for statement in (
+                "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_request_key ON payments(request_key)",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_subscriptions_user_status_expiry ON subscriptions(user_id, status, expires_at)",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_subscriptions_status_expiry ON subscriptions(status, expires_at)",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_user_status ON payments(user_id, status)",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_status_created ON payments(status, created_at)",
+            ):
+                await conn.execute(text(statement))
+        print("Database migration completed successfully.")
+    finally:
+        await engine.dispose()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

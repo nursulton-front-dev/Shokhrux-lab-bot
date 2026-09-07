@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from bot.config import config
@@ -27,10 +28,11 @@ for k in query_params:
 
 if sslmode_key:
     sslmode_val = query_params.pop(sslmode_key)[0]
-    if sslmode_val.lower() in ("require", "verify-ca", "verify-full", "prefer"):
-        connect_args["ssl"] = "require"
-    elif sslmode_val.lower() == "disable":
-        connect_args["ssl"] = False
+    # asyncpg supports the libpq SSL modes. Preserve certificate/hostname
+    # verification instead of silently reducing verify-full to encryption only.
+    if sslmode_val.lower() not in {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}:
+        raise ValueError("Unsupported database SSL mode")
+    connect_args["ssl"] = sslmode_val.lower()
 
 new_query = urlencode(query_params, doseq=True)
 parsed = parsed._replace(query=new_query)
@@ -41,7 +43,12 @@ engine = create_async_engine(
     db_url,
     echo=False,
     pool_pre_ping=True,
-    connect_args=connect_args
+    pool_recycle=config.db_pool_recycle,
+    pool_size=config.db_pool_size,
+    max_overflow=config.db_max_overflow,
+    pool_timeout=config.db_pool_timeout,
+    pool_use_lifo=True,
+    connect_args={**connect_args, "timeout": 15, "command_timeout": 30},
 )
 
 from bot.database.models import Base
@@ -62,7 +69,7 @@ async def init_db():
             await conn.run_sync(Base.metadata.create_all)
         _db_initialized = True
 
-async def get_session() -> AsyncSession:
+async def get_session() -> AsyncIterator[AsyncSession]:
     """Dependency for getting an async database session."""
     async with AsyncSessionLocal() as session:
         yield session

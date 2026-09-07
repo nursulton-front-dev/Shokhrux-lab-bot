@@ -1,0 +1,31 @@
+[Unit]
+Description=Shokhrux Lab Fitness Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/paths to your VPS deployment.
+User=fitnessbot
+Group=fitnessbot
+WorkingDirectory=/opt/fitness_bot
+EnvironmentFile=/opt/fitness_bot/.env
+Environment=TZ=Asia/Tashkent
+Environment=LOG_FILE=/opt/fitness_bot/logs/bot.log
+# Use the project's virtualenv interpreter.
+ExecStart=/opt/fitness_bot/.venv/bin/python /opt/fitness_bot/main.py
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# App also writes its own rotating bot.log; journald captures stdout/stderr.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fitness_bot
+
+# Basic hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

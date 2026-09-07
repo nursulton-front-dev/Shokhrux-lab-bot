@@ -9,3 +9,7 @@ class AdminUserSearch(StatesGroup):
     waiting_for_query = State()
     managing_user = State()
     waiting_for_extend_days = State()
+    waiting_for_cashback_amount = State()
+
+class AdminVipDirectMsg(StatesGroup):
+    waiting_for_message = State()
