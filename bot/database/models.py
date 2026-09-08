@@ -1,6 +1,6 @@
 import datetime
 from typing import List, Optional
-from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float
+from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -46,6 +46,10 @@ class User(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (
+        Index("ix_subscriptions_user_status_expiry", "user_id", "status", "expires_at"),
+        Index("ix_subscriptions_status_expiry", "status", "expires_at"),
+    )
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"))
@@ -62,6 +66,10 @@ class Subscription(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
+    __table_args__ = (
+        Index("ix_payments_user_status", "user_id", "status"),
+        Index("ix_payments_status_created", "status", "created_at"),
+    )
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"))
@@ -70,7 +78,7 @@ class Payment(Base):
     status: Mapped[str] = mapped_column(String)  # "completed", "pending", "failed"
     payment_method: Mapped[str] = mapped_column(String, default="mock_gateway", server_default="mock_gateway")
     cashback_applied: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    request_key: Mapped[Optional[str]] = mapped_column(String(160), unique=True, nullable=True)
+    request_key: Mapped[Optional[str]] = mapped_column(String(160), unique=True, index=True, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -170,4 +178,3 @@ class UserFitnessProfile(Base):
     )
     
     user: Mapped["User"] = relationship(back_populates="fitness_profile")
-

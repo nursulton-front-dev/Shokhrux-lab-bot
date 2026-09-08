@@ -8,7 +8,7 @@
   auto-issues personal invites on VIP purchase and auto-kicks on expiry.
 - A PostgreSQL database (Neon cloud recommended) and a Google Gemini API key.
 - Copy `.env.example` → `.env` and fill in every value.
-- Existing DB? Run `python run_migration.py` to add the `vip_invite_link` column.
+- Existing DB? Run `python run_migration.py` before starting this version. It adds payment idempotency keys, the durable delivery table, and query indexes. Errors stop deployment.
 
 ## 1. Self-test (run before every deploy)
 ```bash
@@ -20,11 +20,17 @@ Exits 0 when all handlers, routers, texts, keyboards and helpers are healthy.
 ```bash
 cp .env.example .env      # then edit .env
 docker compose build
+docker compose stop bot
+docker compose run --rm bot python run_migration.py
+# Existing installation with old invite links: rotate them before starting the new bot.
+docker compose run --rm bot python rotate_invites.py
 docker compose up -d
 docker compose logs -f bot
 ```
 - Uses Neon by default via `DATABASE_URL`.
-- Logs persist in `./logs/bot.log` (rotating, 5 MB × 5), assets in `./assets`.
+- The app runs as UID/GID 10001, with `TZ=Asia/Tashkent` and a 60-second stop grace period.
+- Logs use the named `bot_logs` volume; assets use `bot_assets`, initialized from the image on first creation. Existing host `./logs` is retained but no longer written; existing banners are baked from `./assets` at build time. To update banners after the named volume exists, copy the intended files into `/app/assets` explicitly. Do not delete volumes to update the app.
+- Docker stdout rotates at 10 MB × 3; the app file rotates at 5 MB plus five backups.
 - To run a local Postgres instead of Neon:
   ```bash
   docker compose --profile local-db up -d
@@ -58,3 +64,24 @@ python run_migration.py
 ## 5. Logging
 - App writes `bot.log` (rotating) in the working dir; override path with `LOG_FILE`.
 - Under Docker the path is `/app/logs/bot.log`; under systemd stdout also goes to journald.
+
+## 6. Audit fixes: rollout and operating contract
+- Run one polling process per bot token. FSM isolation, the outbound Telegram limiter and in-memory broadcasts are per process. Payment serialization/idempotency and delivery jobs live in PostgreSQL.
+- Both channels require `can_invite_users` and membership-management rights. New links use join requests: only the paid Telegram user whose stored URL matches is approved. Unknown/forwarded URLs are declined.
+- `rotate_invites.py` contacts Telegram, revokes historical stored links (including expired subscriptions), and sends replacements to active subscribers. Run it once during upgrade; retry if it exits nonzero. Untracked links created by the old manual admin handler cannot be found through Bot API listing: revoke those in Telegram's invite management UI.
+- Money is committed together with a durable delivery job. The worker checks every 60 seconds; Telegram errors retry with backoff up to one hour. Inspect `Payment delivery failed` logs and `payment_deliveries` where `completed_at IS NULL` and `attempts > 0`.
+- Message delivery is at least once: a network timeout after Telegram accepts a message may produce a duplicate notification. Payment status, balance, subscription and referral accrual are protected independently.
+- Cashback is checked again at confirmation. It is not reserved while a manual payment is pending. If another purchase used that cashback, confirmation fails without extending access: an administrator must reconcile the received cash and cashback terms before retrying or refunding.
+- Rahmat Pay is disabled: the previous URL builder was a stub. Enabling online payments requires the provider's documented invoice API and authenticated confirmation/reconciliation. Manual card approval and full cashback payments remain available.
+- Default DB connection budget is 5 per process (`DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=0`), recycle 600 s, pool wait 10 s, connect timeout 15 s, command timeout 30 s. Budget all processes and maintenance connections against the actual Neon compute/pooler quota; these values do not prove an account-specific capacity limit.
+- `pool_pre_ping` replaces stale idle connections but cannot replay a transaction interrupted by a disconnect. Repeat the same payment action after checking its persisted status; do not blindly retry every handler's external effects.
+- Supported verification environment: Python 3.13 with a temporary local PostgreSQL 17.9, and offline Telegram/Gemini doubles. Docker image targets Python 3.12 and still needs a deployment smoke test on the actual host.
+
+## 7. Regression checks
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q tests
+python self_test.py
+python audit/benchmark_event_loop.py
+```
+Tests ignore `.env`; PostgreSQL tests create and delete only their own temporary local cluster via `pgembed`. Neither production Neon nor real Telegram/Gemini are contacted by tests. `self_test.py` is the original import/wiring smoke suite and does not prove financial concurrency on its own.

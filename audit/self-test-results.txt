@@ -1,0 +1,38 @@
+============================================================
+SHOKHRUX LAB BOT — SELF TEST SUITE
+============================================================
+[1] Importing all modules (syntax / circular imports)…
+  ✅ import bot.config
+  ✅ import bot.database.models
+  ✅ import bot.database.db
+  ✅ import bot.texts
+  ✅ import bot.filters.admin
+  ✅ import bot.states.admin
+  ✅ import bot.states.support
+  ✅ import bot.states.fitness
+  ✅ import bot.states.registration
+  ✅ import bot.services.subscription
+  ✅ import bot.services.rahmat
+  ✅ import bot.services.scheduler
+  ✅ import bot.services.charts
+  ✅ import bot.services.gemini_service
+  ✅ import bot.handlers.user
+  ✅ import bot.handlers.admin
+  ✅ import bot.handlers.fitness_tools
+[2] Registering routers into a Dispatcher…
+  ✅ include all routers
+[3] Verifying payment confirm/reject handlers exist…
+  ✅ admin_conf_/admin_rej_ handlers defined
+[3b] Verifying VIP-group + client-search wiring…
+  ✅ VIP group + admin search wiring
+[4] Checking bilingual text dictionaries (uz/ru)…
+  ✅ all uz/ru text pairs complete
+[5] Building keyboards for all languages / states…
+  ✅ main_menu_keyboard (all states)
+  ✅ smart fitness hub keyboard
+[6] Exercising pure helper functions…
+  ✅ generate_weight_chart
+  ✅ split_text_into_chunks
+============================================================
+RESULT: 25/25 checks passed, 0 failed.
+✅ ALL CHECKS PASSED

@@ -1,0 +1,22 @@
+{
+  "xlsx_1000_users_1000_payments": {
+    "synchronous": {
+      "render_seconds": 2.9292,
+      "max_heartbeat_gap_seconds": 2.9344
+    },
+    "to_thread": {
+      "render_seconds": 2.7971,
+      "max_heartbeat_gap_seconds": 0.1142
+    }
+  },
+  "chart_1000_points": {
+    "synchronous": {
+      "render_seconds": 0.3908,
+      "max_heartbeat_gap_seconds": 0.3959
+    },
+    "to_thread": {
+      "render_seconds": 0.2506,
+      "max_heartbeat_gap_seconds": 0.0242
+    }
+  }
+}

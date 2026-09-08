@@ -35,6 +35,17 @@ async def main() -> None:
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_user_status ON payments(user_id, status)",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_status_created ON payments(status, created_at)",
             ):
+                # A killed CREATE INDEX CONCURRENTLY leaves an INVALID index;
+                # IF NOT EXISTS alone would silently skip it on every retry.
+                index_name = statement.split("EXISTS ", 1)[1].split(" ", 1)[0]
+                valid = await conn.scalar(text(
+                    "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+                    "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                    "WHERE c.relname=:name AND n.nspname=current_schema()"
+                ), {"name": index_name})
+                if valid is False:
+                    # index_name only comes from the fixed statements above.
+                    await conn.execute(text(f'DROP INDEX CONCURRENTLY "{index_name}"'))
                 await conn.execute(text(statement))
         print("Database migration completed successfully.")
     finally:

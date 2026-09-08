@@ -18,6 +18,8 @@ query_params = parse_qs(parsed.query)
 # Remove channel_binding if present (unsupported by asyncpg)
 keys_to_remove = [k for k in query_params if k.lower() in ("channel_binding", "gssencmode")]
 for k in keys_to_remove:
+    if "require" in [value.lower() for value in query_params[k]]:
+        raise ValueError(f"Required {k} is not supported by this asyncpg configuration")
     query_params.pop(k)
 
 sslmode_key = None

@@ -1,0 +1,21 @@
+........................................................................ [ 71%]
+.............................                                            [100%]
+=============================== warnings summary ===============================
+tests/test_rbac_audit.py::test_excel_render_and_save_do_not_block_event_loop[generate_styled_excel-_render_styled_excel]
+  /home/nursultan/projects/Shokhrux lab bot/bot/handlers/admin.py:422: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    _render_styled_excel, users, subs, payments, datetime.datetime.utcnow(),
+
+tests/test_rbac_audit.py::test_excel_render_and_save_do_not_block_event_loop[generate_vip_excel-_render_vip_excel]
+  /home/nursultan/projects/Shokhrux lab bot/bot/handlers/admin.py:331: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    return await _render_in_thread(_render_vip_excel, clients, datetime.datetime.utcnow())
+
+tests/test_rbac_audit.py::test_vip_html_name_cannot_inject_or_break_markup
+  /home/nursultan/projects/Shokhrux lab bot/bot/handlers/admin.py:291: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now_naive = datetime.datetime.utcnow()
+
+tests/test_rbac_audit.py::test_kick_failure_retains_durable_retry_marker
+  /home/nursultan/projects/Shokhrux lab bot/bot/handlers/admin.py:1290: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+101 passed, 4 warnings in 9.80s

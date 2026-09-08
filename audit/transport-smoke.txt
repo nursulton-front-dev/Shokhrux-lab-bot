@@ -1,0 +1,1 @@
+Real google-genai Client constructs in a worker thread and closes both transports: PASS. No API requests sent.

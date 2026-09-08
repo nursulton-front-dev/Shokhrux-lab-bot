@@ -21,7 +21,7 @@ from aiogram.types import (
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, desc
+from sqlalchemy import select, func, exists, or_, desc
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
@@ -327,6 +327,7 @@ async def msg_admin_vip_clients(event: Message | CallbackQuery, session: AsyncSe
 async def generate_vip_excel(session: AsyncSession) -> BytesIO:
     async with _excel_lock:
         clients = await _get_active_vip_clients(session)
+        await session.rollback()
         return await _render_in_thread(_render_vip_excel, clients, datetime.datetime.utcnow())
 
 
@@ -416,6 +417,7 @@ async def generate_styled_excel(session: AsyncSession) -> BytesIO:
             select(Subscription).order_by(Subscription.expires_at.desc()))).all()]
         payments = [_export_payment(payment) for payment in (await session.scalars(
             select(Payment).order_by(Payment.created_at.desc()))).all()]
+        await session.rollback()
         return await _render_in_thread(
             _render_styled_excel, users, subs, payments, datetime.datetime.utcnow(),
         )
@@ -959,31 +961,19 @@ async def process_bc_start(callback: CallbackQuery, state: FSMContext, session: 
     # Drop the confirmation state before I/O; per-user FSM isolation in runtime
     # serializes repeat callbacks for the same administrator.
     await state.clear()
-    now_naive = datetime.datetime.utcnow()
-    
+    now = datetime.datetime.now(datetime.timezone.utc)
+    active = exists().where(Subscription.user_id == User.telegram_id,
+                            Subscription.status == "active", Subscription.expires_at > now)
+    ever_subscribed = exists().where(Subscription.user_id == User.telegram_id)
+    ever_paid = exists().where(Payment.user_id == User.telegram_id, Payment.status == "completed")
+    query = select(User.telegram_id).order_by(User.telegram_id)
     if audience == "active":
-        subs = (await session.execute(select(Subscription).where(Subscription.status == "active"))).scalars().all()
-        user_ids = [s.user_id for s in subs if to_naive_utc(s.expires_at) and to_naive_utc(s.expires_at) > now_naive]
+        query = query.where(active)
     elif audience == "expired":
-        subs = (await session.execute(select(Subscription))).scalars().all()
-        active_uids = set(s.user_id for s in subs if s.status == "active" and to_naive_utc(s.expires_at) and to_naive_utc(s.expires_at) > now_naive)
-        pays = (await session.execute(select(Payment).where(Payment.status == "completed"))).scalars().all()
-        pay_uids = set(p.user_id for p in pays)
-        
-        all_uids = (await session.execute(select(User.telegram_id))).scalars().all()
-        user_ids = [uid for uid in all_uids if uid not in active_uids and (uid in pay_uids or uid in set(s.user_id for s in subs))]
+        query = query.where(~active, ever_subscribed | ever_paid)
     elif audience == "never":
-        subs = (await session.execute(select(Subscription))).scalars().all()
-        sub_uids = set(s.user_id for s in subs)
-        pays = (await session.execute(select(Payment).where(Payment.status == "completed"))).scalars().all()
-        pay_uids = set(p.user_id for p in pays)
-        
-        all_uids = (await session.execute(select(User.telegram_id))).scalars().all()
-        user_ids = [uid for uid in all_uids if uid not in sub_uids and uid not in pay_uids]
-    else:
-        user_ids = (await session.execute(select(User.telegram_id))).scalars().all()
-
-    user_ids = list(dict.fromkeys(user_ids))
+        query = query.where(~ever_subscribed, ~ever_paid)
+    user_ids = list((await session.scalars(query)).all())
     await session.rollback()  # release the read transaction before long network work
     await callback.message.edit_text(f"🚀 <b>Рассылка запущена!</b> Ожидайте окончания...\nАудитория: {len(user_ids)} чел.")
     

@@ -12,3 +12,9 @@ logs/
 !.env.example
 *.md
 .pytest_cache/
+
+audit/
+tests/
+requirements-dev.txt
+core
+core.*

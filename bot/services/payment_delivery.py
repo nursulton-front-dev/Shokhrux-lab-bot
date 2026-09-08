@@ -9,6 +9,7 @@ import datetime
 import logging
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import select
 
 from bot.config import config
@@ -82,7 +83,7 @@ async def deliver_payment(payment_id: int, bot: Bot) -> None:
             async with session.begin():
                 job = await session.scalar(select(PaymentDelivery).where(PaymentDelivery.payment_id == payment_id)
                                            .with_for_update())
-                if job is not None and job.completed_at is None:
+                if job is not None:
                     job.attempts += 1
                     job.next_attempt_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
                         seconds=min(3600, 30 * 2 ** min(job.attempts, 7)))
@@ -100,7 +101,10 @@ async def _notify_referral(payment_id: int, bot: Bot) -> None:
                 if referrer is not None:
                     from bot import texts
                     lang = referrer.language if referrer.language in {"uz", "ru"} else "uz"
-                    await bot.send_message(referrer.telegram_id, texts.CASHBACK_NOTIFY_REFERRER[lang], request_timeout=10)
+                    try:
+                        await bot.send_message(referrer.telegram_id, texts.CASHBACK_NOTIFY_REFERRER[lang], request_timeout=10)
+                    except TelegramForbiddenError:
+                        logger.info("Referrer %s cannot receive notifications", referrer.telegram_id)
             job.referral_notified = True
 
 
@@ -111,8 +115,9 @@ async def deliver_pending_payments(bot: Bot) -> None:
             PaymentDelivery.completed_at.is_(None), PaymentDelivery.next_attempt_at <= now
         ).order_by(PaymentDelivery.next_attempt_at, PaymentDelivery.payment_id).limit(50))).all())
         referral_ids = list((await session.scalars(select(PaymentDelivery.payment_id).where(
-            PaymentDelivery.completed_at.is_not(None), PaymentDelivery.referral_notified.is_(False)
-        ).order_by(PaymentDelivery.payment_id).limit(50))).all())
+            PaymentDelivery.completed_at.is_not(None), PaymentDelivery.referral_notified.is_(False),
+            PaymentDelivery.next_attempt_at <= now,
+        ).order_by(PaymentDelivery.next_attempt_at, PaymentDelivery.payment_id).limit(50))).all())
     for payment_id in ids:
         try:
             await deliver_payment(payment_id, bot)
@@ -128,3 +133,9 @@ async def deliver_pending_payments(bot: Bot) -> None:
             raise
         except Exception:
             logger.exception("Referral notification failed: payment_id=%s", payment_id)
+            async with AsyncSessionLocal() as session, session.begin():
+                job = await session.get(PaymentDelivery, payment_id, with_for_update=True)
+                if job is not None:
+                    job.attempts += 1
+                    job.next_attempt_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                        seconds=min(3600, 30 * 2 ** min(job.attempts, 7)))
