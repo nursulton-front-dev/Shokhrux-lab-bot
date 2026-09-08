@@ -7,6 +7,10 @@
   admin there with **Ban users** and **Invite users via link** rights — it
   auto-issues personal invites on VIP purchase and auto-kicks on expiry.
 - A PostgreSQL database (Neon cloud recommended) and a Google Gemini API key.
+- `DATABASE_URL` must NOT contain `channel_binding=require` — asyncpg does not support it and
+  `bot/database/db.py` refuses to start rather than silently downgrading the connection.
+- Tariff banners are per language: `assets/Tarifs_uz.jpg` and `assets/Tarifs_ru.jpg`
+  (override with `TARIFFS_IMG_UZ` / `TARIFFS_IMG_RU`).
 - Copy `.env.example` → `.env` and fill in every value.
 - Existing DB? Run `python run_migration.py` before starting this version. It adds payment idempotency keys, the durable delivery table, and query indexes. Errors stop deployment.
 
@@ -29,7 +33,12 @@ docker compose logs -f bot
 ```
 - Uses Neon by default via `DATABASE_URL`.
 - The app runs as UID/GID 10001, with `TZ=Asia/Tashkent` and a 60-second stop grace period.
-- Logs use the named `bot_logs` volume; assets use `bot_assets`, initialized from the image on first creation. Existing host `./logs` is retained but no longer written; existing banners are baked from `./assets` at build time. To update banners after the named volume exists, copy the intended files into `/app/assets` explicitly. Do not delete volumes to update the app.
+- Logs use the named `bot_logs` volume; assets use `bot_assets`, initialized from the image on first creation. Existing host `./logs` is retained but no longer written; existing banners are baked from `./assets` at build time. **The named volume shadows the image layer: rebuilding does NOT refresh banners.** After changing `assets/`, copy them in explicitly:
+  ```bash
+  docker cp assets/Tarifs_ru.jpg fitness_bot:/app/assets/Tarifs_ru.jpg
+  docker cp assets/Tarifs_uz.jpg fitness_bot:/app/assets/Tarifs_uz.jpg
+  ```
+  Do not delete volumes to update the app.
 - Docker stdout rotates at 10 MB × 3; the app file rotates at 5 MB plus five backups.
 - To run a local Postgres instead of Neon:
   ```bash

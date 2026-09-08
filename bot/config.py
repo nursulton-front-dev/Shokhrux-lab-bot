@@ -33,10 +33,14 @@ class Settings(BaseSettings):
     channel_id: Optional[int] = -1001234567890  # Main closed channel (MAIN_CHANNEL_ID)
     vip_chat_id: Optional[int] = None  # Closed VIP group for 6-month clients
 
-    tariff_1m_img: Optional[str] = "assets/tariff_1m.jpg"
-    tariff_3m_img: Optional[str] = "assets/tariff_3m.jpg"
-    tariff_6m_img: Optional[str] = "assets/tariff_6m.jpg"
-    tariffs_img: Optional[str] = "assets/tariffs.jpg"
+    # Tariff banner per interface language. Relative paths resolve against the
+    # project root, so the same value works under Docker and systemd.
+    tariffs_img_uz: str = "assets/Tarifs_uz.jpg"
+    tariffs_img_ru: str = "assets/Tarifs_ru.jpg"
+
+    def tariffs_img(self, lang: str) -> str:
+        return self.tariffs_img_ru if lang == "ru" else self.tariffs_img_uz
+
     cashback_reward_amount: int = Field(default=30000, ge=0)
 
     @field_validator(

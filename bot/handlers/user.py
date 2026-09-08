@@ -708,6 +708,15 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
     await message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
     await show_tariffs(message, lang)
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _tariffs_banner_path(lang: str) -> str:
+    """Absolute path to the tariff banner for the user's interface language."""
+    configured = config.tariffs_img(lang if lang in ("uz", "ru") else "uz")
+    return configured if os.path.isabs(configured) else os.path.join(PROJECT_ROOT, configured)
+
+
 async def show_tariffs(message_obj: Message, lang: str = "uz"):
     lang = lang if lang in ("uz", "ru") else "uz"
     caption_text = texts.ALL_TARIFFS_CARD[lang]
@@ -728,11 +737,12 @@ async def show_tariffs(message_obj: Message, lang: str = "uz"):
         [InlineKeyboardButton(text=btn_6_text, callback_data="tariff_6")]
     ])
     
-    banner_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "tariffs.jpg")
+    banner_path = _tariffs_banner_path(lang)
     if await asyncio.to_thread(os.path.exists, banner_path):
         photo_file = FSInputFile(banner_path)
         await message_obj.answer_photo(photo=photo_file, caption=caption_text, reply_markup=kb, parse_mode="HTML")
     else:
+        logger.warning("Tariff banner missing for lang=%s: %s", lang, banner_path)
         await message_obj.answer(caption_text, reply_markup=kb, parse_mode="HTML")
 
 

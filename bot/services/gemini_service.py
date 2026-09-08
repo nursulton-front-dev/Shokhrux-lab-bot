@@ -62,9 +62,11 @@ async def _gemini_client() -> AsyncIterator[genai.Client]:
     finally:
         await _finish_client_cleanup(client)
 
-PRIMARY_MODEL = "gemini-2.5-flash"
-# Gemini 2.0 Flash was retired on 2026-06-01.
-FALLBACK_MODELS = ["gemini-2.5-flash-lite"]
+# gemini-2.5-flash is closed to new API projects and answers 404 there; the API
+# itself points new keys at gemini-3.6-flash. The 2.5 names stay as fallbacks so
+# an older key that still has access keeps working.
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 
 async def analyze_food_image(image_bytes: bytes, mime_type: str = "image/jpeg", language: str = "ru") -> Dict[str, Any]:
     lang_code = language if language in ("uz", "ru") else "ru"

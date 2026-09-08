@@ -79,7 +79,9 @@ async def test_gemini_closes_both_transports_on_success_and_failure(monkeypatch,
         client.aio.models.generate_content.side_effect = RuntimeError("offline timeout")
         with pytest.raises(RuntimeError, match="offline timeout"):
             await call_gemini(operation)
-        assert client.aio.models.generate_content.await_count == 2
+        assert client.aio.models.generate_content.await_count == len(
+            [gemini.PRIMARY_MODEL, *gemini.FALLBACK_MODELS]
+        )
     else:
         await call_gemini(operation)
     client.aio.aclose.assert_awaited_once()
