@@ -246,11 +246,16 @@ async def test_polling_preserves_queued_updates_and_starts_workers_once(monkeypa
     monkeypatch.setattr(run_polling, "init_db", AsyncMock())
     monkeypatch.setattr(run_polling, "start_scheduler", AsyncMock())
     monkeypatch.setattr(run_polling, "start_payment_delivery", AsyncMock())
+    monkeypatch.setattr(run_polling, "run_payment_server", AsyncMock())
     workers = []
     await run_polling._run_application(bot, dp, workers)
     await asyncio.gather(*workers)
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False, request_timeout=15)
-    assert len(workers) == 2
+    # scheduler, payment delivery, and the merchant callback endpoint.
+    assert len(workers) == 3
+    assert {task.get_name() for task in workers} == {
+        "subscription-scheduler", "payment-delivery", "payments-endpoint"
+    }
     dp.start_polling.assert_awaited_once_with(
         bot, handle_signals=False, close_bot_session=False, tasks_concurrency_limit=50
     )

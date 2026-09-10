@@ -23,7 +23,7 @@ async def create_payment_intent(
     """Serialize intent creation and deduplicate clicks on the same UI action."""
     try:
         price = TARIFF_PRICES.get(months)
-        if price is None or method not in {"manual_card", "cashback"}:
+        if price is None or method not in {"manual_card", "cashback", "click", "payme"}:
             raise PaymentValidationError("Invalid tariff or payment method")
         user = await session.scalar(select(User).where(User.telegram_id == user_id)
                                     .with_for_update().execution_options(populate_existing=True))

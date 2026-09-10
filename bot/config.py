@@ -33,20 +33,54 @@ class Settings(BaseSettings):
     channel_id: Optional[int] = -1001234567890  # Main closed channel (MAIN_CHANNEL_ID)
     vip_chat_id: Optional[int] = None  # Closed VIP group for 6-month clients
 
-    tariff_1m_img: Optional[str] = "assets/tariff_1m.jpg"
-    tariff_3m_img: Optional[str] = "assets/tariff_3m.jpg"
-    tariff_6m_img: Optional[str] = "assets/tariff_6m.jpg"
-    tariffs_img: Optional[str] = "assets/tariffs.jpg"
+    # Tariff banner per interface language. Relative paths resolve against the
+    # project root, so the same value works under Docker and systemd.
+    tariffs_img_uz: str = "assets/Tarifs_uz.jpg"
+    tariffs_img_ru: str = "assets/Tarifs_ru.jpg"
+
+    def tariffs_img(self, lang: str) -> str:
+        return self.tariffs_img_ru if lang == "ru" else self.tariffs_img_uz
+
     cashback_reward_amount: int = Field(default=30000, ge=0)
+
+    # ===== Payme Merchant API =====
+    payme_merchant_id: Optional[str] = None
+    payme_test_key: Optional[str] = None
+    payme_prod_key: Optional[str] = None
+    # Sandbox mode authenticates with the test key and enables sandbox orders.
+    payme_sandbox: bool = True
+    payme_host: str = "0.0.0.0"
+    payme_port: int = Field(default=8000, ge=1, le=65535)
+
+    @property
+    def payme_key(self) -> Optional[str]:
+        """Exactly one key is accepted, so a leaked test key cannot sign
+        production callbacks and vice versa."""
+        return self.payme_test_key if self.payme_sandbox else self.payme_prod_key
+
+    @property
+    def payme_enabled(self) -> bool:
+        return bool(self.payme_merchant_id and self.payme_key)
+
+    # ===== Click SHOP API =====
+    click_service_id: Optional[int] = None
+    click_merchant_id: Optional[int] = None
+    click_secret_key: Optional[str] = None
+
+    @property
+    def click_enabled(self) -> bool:
+        return bool(self.click_service_id and self.click_merchant_id and self.click_secret_key)
 
     @field_validator(
         "admin_id", "support_id", "channel_id", "vip_chat_id",
+        "payme_merchant_id", "payme_test_key", "payme_prod_key",
+        "click_service_id", "click_merchant_id", "click_secret_key",
         mode="before",
     )
     @classmethod
     def _empty_str_to_none(cls, v):
-        """Treat an empty/blank env value for optional int fields as unset,
-        so a `VIP_CHAT_ID=` line in .env doesn't crash startup."""
+        """Treat an empty/blank env value for optional fields as unset, so a
+        `VIP_CHAT_ID=` or `PAYME_PROD_KEY=` line in .env doesn't crash startup."""
         if isinstance(v, str) and v.strip() == "":
             return None
         return v

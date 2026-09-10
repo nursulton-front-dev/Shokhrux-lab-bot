@@ -34,6 +34,8 @@ async def main() -> None:
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_subscriptions_status_expiry ON subscriptions(status, expires_at)",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_user_status ON payments(user_id, status)",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_status_created ON payments(status, created_at)",
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_payme_transactions_payme_time ON payme_transactions(payme_time)",
+                "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ix_payme_transactions_active_order ON payme_transactions(payment_id) WHERE state IN (1, 2)",
             ):
                 # A killed CREATE INDEX CONCURRENTLY leaves an INVALID index;
                 # IF NOT EXISTS alone would silently skip it on every retry.

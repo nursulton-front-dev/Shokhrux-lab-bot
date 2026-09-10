@@ -62,9 +62,13 @@ async def _gemini_client() -> AsyncIterator[genai.Client]:
     finally:
         await _finish_client_cleanup(client)
 
-PRIMARY_MODEL = "gemini-2.5-flash"
-# Gemini 2.0 Flash was retired on 2026-06-01.
-FALLBACK_MODELS = ["gemini-2.5-flash-lite"]
+# The whole 2.5 family answers 404 for API keys created after its retirement, so
+# it cannot serve as a fallback. Every name below was verified callable with the
+# production key. gemini-3.6-flash is the congested default and returns 503
+# under load, so the chain leads with a faster sibling and degrades to a lite
+# model rather than failing the user's request.
+PRIMARY_MODEL = "gemini-3.7-flash"
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 async def analyze_food_image(image_bytes: bytes, mime_type: str = "image/jpeg", language: str = "ru") -> Dict[str, Any]:
     lang_code = language if language in ("uz", "ru") else "ru"

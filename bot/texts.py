@@ -193,12 +193,12 @@ ALL_TARIFFS_CARD = {
         "📋 Paket tarkibi:\n"
         "• 30 kun davomida yopiq kanalga to'liq kirish\n"
         "• Mashg'ulot dasturlari va PP-retseptlar bazasi\n"
+        "• AI-nutritsiolog va foto-kaloriya vositalari\n"
         "• Umumiy guruhda kunlik motivatsiya\n\n"
         "🥈 <b>3 oylik — Optimal natija</b>\n"
         "💰 Narxi: <b>1 200 000 UZS</b> (300 000 UZS tejamkorlik)\n"
         "📋 Paket tarkibi:\n"
         "• 1 oylik tarifdagi barcha imkoniyatlar\n"
-        "• AI-nutritsiolog va foto-kaloriya vositalari\n"
         "• Shaxsiy taomnoma va mashqlarni moslashtirish\n"
         "• Jonli efirlarda texnika tahlili\n\n"
         "🥇 <b>6 oylik — VIP / Maksimal natija</b>\n"
@@ -215,12 +215,12 @@ ALL_TARIFFS_CARD = {
         "📋 Наполнение:\n"
         "• Доступ к закрытому каналу на 30 дней\n"
         "• Программы тренировок и база ПП-рецептов\n"
+        "• ИИ-нутрициолог и подсчёт калорий по фото\n"
         "• Ежедневная мотивация в общей группе\n\n"
         "🥈 <b>Тариф 3 месяца — Оптимальный результат</b>\n"
         "💰 Цена: <b>1 200 000 UZS</b> (выгода 300 000 UZS)\n"
         "📋 Наполнение:\n"
         "• Все возможности тарифа на 1 месяц\n"
-        "• Доступ к ИИ-нутрициологу и подсчету калорий по фото\n"
         "• Индивидуальное меню и корректировка упражнений\n"
         "• Прямые эфиры с разбором техники\n\n"
         "🥇 <b>Тариф 6 месяцев — VIP / Максимальный результат</b>\n"
@@ -366,16 +366,6 @@ INVITE_FRIEND_BTN = {
 GUARD_ACCESS_DENIED = {
     "uz": "🔒 Bu funksiya faqat klubning faol a'zolari uchun mavjud. Foydalanish uchun obunangizni faollashtiring yoki uzaytiring! 🏋️‍♂️",
     "ru": "🔒 Эта функция доступна только активным участникам клуба. Оформите или продлите подписку для доступа! 🏋️‍♂️"
-}
-
-TARIFF_UPGRADE_REQUIRED = {
-    "uz": "🔒 Bu funksiya 3 va 6 oylik tariflarda mavjud. Foydalanish uchun tarifingizni yangilang! 🚀",
-    "ru": "🔒 Эта функция доступна в тарифах на 3 и 6 месяцев. Обновите ваш тариф для доступа! 🚀"
-}
-
-UPGRADE_TARIFF_BTN = {
-    "uz": "🚀 Tarifni oshirish",
-    "ru": "🚀 Обновить тариф"
 }
 
 PROFILE_ASK_GOAL = {
@@ -727,4 +717,60 @@ VIP_EXPIRED = {
         "🤝 Чтобы вернуть VIP-уровень и участвовать в закрытых встречах, "
         "продлите подписку прямо сейчас! 👇"
     )
+}
+
+
+CLICK_PAY_BTN = {
+    "uz": "💳 Click orqali to'lash",
+    "ru": "💳 Оплатить через Click",
+}
+
+CLICK_OPEN_BTN = {
+    "uz": "🔗 To'lov sahifasini ochish",
+    "ru": "🔗 Открыть страницу оплаты",
+}
+
+CLICK_PAY_INFO = {
+    "uz": (
+        "💳 <b>Click orqali to'lov</b>\n\n"
+        "Buyurtma raqami: <code>{order_id}</code>\n"
+        "To'lov summasi: <b>{price} UZS</b>\n\n"
+        "Quyidagi tugma orqali to'lovni yakunlang. To'lov tasdiqlangandan so'ng "
+        "kanalga havola avtomatik yuboriladi."
+    ),
+    "ru": (
+        "💳 <b>Оплата через Click</b>\n\n"
+        "Номер заказа: <code>{order_id}</code>\n"
+        "Сумма к оплате: <b>{price} UZS</b>\n\n"
+        "Завершите оплату по кнопке ниже. После подтверждения ссылка на канал "
+        "придёт автоматически."
+    ),
+}
+
+
+PAYME_PAY_BTN = {
+    "uz": "💳 Payme orqali to'lash",
+    "ru": "💳 Оплатить через Payme",
+}
+
+PAYME_OPEN_BTN = {
+    "uz": "🔗 Payme'da to'lash",
+    "ru": "🔗 Перейти к оплате Payme",
+}
+
+PAYME_PAY_INFO = {
+    "uz": (
+        "💳 <b>Payme orqali to'lov</b>\n\n"
+        "Buyurtma raqami: <code>{order_id}</code>\n"
+        "To'lov summasi: <b>{price} UZS</b>\n\n"
+        "Quyidagi tugma orqali to'lovni yakunlang. To'lov tasdiqlangandan so'ng "
+        "kanalga havola avtomatik yuboriladi."
+    ),
+    "ru": (
+        "💳 <b>Оплата через Payme</b>\n\n"
+        "Номер заказа: <code>{order_id}</code>\n"
+        "Сумма к оплате: <b>{price} UZS</b>\n\n"
+        "Завершите оплату по кнопке ниже. После подтверждения ссылка на канал "
+        "придёт автоматически."
+    ),
 }

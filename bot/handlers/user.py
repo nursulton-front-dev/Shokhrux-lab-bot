@@ -29,6 +29,8 @@ from bot.states.fitness import FitnessStates
 from bot.states.support import SupportState
 from bot.config import config
 from bot.services.rahmat import create_payment_intent, process_successful_payment
+from bot.services.click.protocol import build_pay_url as build_click_pay_url
+from bot.services.payme.protocol import build_checkout_url as build_payme_checkout_url
 from bot.services.payment_policy import PaymentValidationError
 from bot import texts
 
@@ -708,6 +710,15 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
     await message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
     await show_tariffs(message, lang)
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _tariffs_banner_path(lang: str) -> str:
+    """Absolute path to the tariff banner for the user's interface language."""
+    configured = config.tariffs_img(lang if lang in ("uz", "ru") else "uz")
+    return configured if os.path.isabs(configured) else os.path.join(PROJECT_ROOT, configured)
+
+
 async def show_tariffs(message_obj: Message, lang: str = "uz"):
     lang = lang if lang in ("uz", "ru") else "uz"
     caption_text = texts.ALL_TARIFFS_CARD[lang]
@@ -728,11 +739,12 @@ async def show_tariffs(message_obj: Message, lang: str = "uz"):
         [InlineKeyboardButton(text=btn_6_text, callback_data="tariff_6")]
     ])
     
-    banner_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "tariffs.jpg")
+    banner_path = _tariffs_banner_path(lang)
     if await asyncio.to_thread(os.path.exists, banner_path):
         photo_file = FSInputFile(banner_path)
         await message_obj.answer_photo(photo=photo_file, caption=caption_text, reply_markup=kb, parse_mode="HTML")
     else:
+        logger.warning("Tariff banner missing for lang=%s: %s", lang, banner_path)
         await message_obj.answer(caption_text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -808,12 +820,21 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
             [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")]
         ])
     else:
-        rahmat_label = f"💳 Rahmat Pay ({final_price:,} UZS)" if lang == "uz" else f"💳 Оплатить через Rahmat Pay ({final_price:,} UZS)"
         manual_label = f"💳 Qo'lda to'lash (Karta)" if lang == "uz" else f"💳 Ручная оплата (Карта)"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=manual_label, callback_data=f"pay_manual_{tariff_months}_{use_cb}")],
-            [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")]
-        ])
+        rows = []
+        # Hosted checkouts first: they confirm themselves, manual payment does not.
+        gateway_row = []
+        if config.click_enabled:
+            gateway_row.append(InlineKeyboardButton(
+                text=texts.CLICK_PAY_BTN[lang], callback_data=f"pay_click_{tariff_months}_{use_cb}"))
+        if config.payme_enabled:
+            gateway_row.append(InlineKeyboardButton(
+                text=texts.PAYME_PAY_BTN[lang], callback_data=f"pay_payme_{tariff_months}_{use_cb}"))
+        if gateway_row:
+            rows.append(gateway_row)
+        rows.append([InlineKeyboardButton(text=manual_label, callback_data=f"pay_manual_{tariff_months}_{use_cb}")])
+        rows.append([InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     
     price_text = f"<s>{orig_price:,}</s> ➔ <b>{final_price:,} UZS</b> (Keshbek: -{cashback_used:,} UZS)" if cashback_used > 0 else f"<b>{orig_price:,} UZS</b>"
     
@@ -849,6 +870,86 @@ async def cb_pay_cashback_full(callback: CallbackQuery, session: AsyncSession, b
         return
     await callback.answer("Подписка активирована. Ссылка будет отправлена автоматически." if ok
                           else "Этот платёж уже обработан.", show_alert=True)
+
+async def _create_gateway_order(callback: CallbackQuery, session: AsyncSession, *,
+                               method: str, months: int, use_cb: int) -> Payment | None:
+    """Mint the pending order a hosted checkout will confirm, or explain why not."""
+    try:
+        payment = await create_payment_intent(
+            session, user_id=callback.from_user.id, months=months, method=method,
+            use_cashback=bool(use_cb),
+            request_key=_payment_request_key(callback, method, months, bool(use_cb)))
+    except PaymentValidationError:
+        await callback.answer("Платёж устарел. Откройте тариф заново.", show_alert=True)
+        return None
+    if payment.status == "completed":
+        await callback.answer("Этот заказ уже оплачен.", show_alert=True)
+        return None
+    if payment.status != "pending":
+        # A cancelled attempt closes its order for good; a fresh tariff screen
+        # mints a new one, so a stale checkout link stays unpayable.
+        await callback.answer("Платёж отменён. Откройте тариф заново.", show_alert=True)
+        return None
+    if payment.amount <= 0:
+        # A fully covered tariff is activated by cashback, never by a 0 UZS invoice.
+        await callback.answer("Этот тариф покрыт кешбэком. Откройте тариф заново.", show_alert=True)
+        return None
+    return payment
+
+
+async def _send_checkout_link(callback: CallbackQuery, *, lang: str, payment: Payment, url: str,
+                              info: dict, open_btn: dict, months: int, use_cb: int) -> None:
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=open_btn[lang], url=url)],
+        [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data=f"select_pay_{months}_{use_cb}")]
+    ])
+    await callback.message.answer(
+        info[lang].format(order_id=payment.id, price=f"{payment.amount:,}"),
+        reply_markup=keyboard)
+    await callback.answer()
+
+
+async def _payer_language(session: AsyncSession, user_id: int) -> str:
+    user = await session.scalar(select(User).where(User.telegram_id == user_id))
+    return user.language if user and user.language else "uz"
+
+
+@router.callback_query(F.data.regexp(r"^pay_click_(1|3|6)_[01]$"))
+async def cb_pay_click(callback: CallbackQuery, session: AsyncSession):
+    """Mint the order Click will confirm, then hand the payer its checkout link."""
+    _, _, months_raw, use_cb_raw = callback.data.split("_")
+    months, use_cb = int(months_raw), int(use_cb_raw)
+    lang = await _payer_language(session, callback.from_user.id)
+    if not config.click_enabled:
+        await callback.answer("Click временно недоступен. Используйте оплату картой.", show_alert=True)
+        return
+    payment = await _create_gateway_order(callback, session, method="click", months=months, use_cb=use_cb)
+    if payment is None:
+        return
+    url = build_click_pay_url(service_id=config.click_service_id, merchant_id=config.click_merchant_id,
+                              amount=payment.amount, order_id=payment.id)
+    await _send_checkout_link(callback, lang=lang, payment=payment, url=url,
+                              info=texts.CLICK_PAY_INFO, open_btn=texts.CLICK_OPEN_BTN,
+                              months=months, use_cb=use_cb)
+
+
+@router.callback_query(F.data.regexp(r"^pay_payme_(1|3|6)_[01]$"))
+async def cb_pay_payme(callback: CallbackQuery, session: AsyncSession):
+    """Same flow as Click, against the Payme hosted checkout."""
+    _, _, months_raw, use_cb_raw = callback.data.split("_")
+    months, use_cb = int(months_raw), int(use_cb_raw)
+    lang = await _payer_language(session, callback.from_user.id)
+    if not config.payme_enabled:
+        await callback.answer("Payme временно недоступен. Используйте оплату картой.", show_alert=True)
+        return
+    payment = await _create_gateway_order(callback, session, method="payme", months=months, use_cb=use_cb)
+    if payment is None:
+        return
+    url = build_payme_checkout_url(merchant_id=config.payme_merchant_id,
+                                   order_id=payment.id, amount_uzs=payment.amount)
+    await _send_checkout_link(callback, lang=lang, payment=payment, url=url,
+                              info=texts.PAYME_PAY_INFO, open_btn=texts.PAYME_OPEN_BTN,
+                              months=months, use_cb=use_cb)
 
 @router.callback_query(F.data.regexp(r"^pay_manual_(1|3|6)(_[01])?$"))
 async def cb_pay_manual(callback: CallbackQuery, session: AsyncSession):

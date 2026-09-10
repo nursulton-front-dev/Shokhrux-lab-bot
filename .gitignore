@@ -24,3 +24,6 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Test virtualenv (438 MB, never committed)
+.venv-test/

@@ -95,10 +95,15 @@ def get_smart_fitness_hub_reply_keyboard(lang: str = "uz") -> ReplyKeyboardMarku
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 async def check_guard_and_get_user(
-    event: Message | CallbackQuery, 
+    event: Message | CallbackQuery,
     session: AsyncSession,
-    min_tariff_months: int = 1
 ) -> tuple[User | None, str, Subscription | None]:
+    """Admit anyone holding an active subscription, whatever the tariff.
+
+    Access used to depend on `tariff_months`, so a 1-month client was refused
+    the AI tools. Every paid tariff now unlocks the same features; the tariffs
+    differ only in duration, price and the VIP group.
+    """
     user_id = event.from_user.id
     user = await session.scalar(select(User).where(User.telegram_id == user_id))
     lang = user.language if user and user.language else "uz"
@@ -122,18 +127,6 @@ async def check_guard_and_get_user(
             await event.message.answer(text, reply_markup=kb)
             await event.answer()
         return None, lang, None
-
-    if sub.tariff_months < min_tariff_months:
-        text = texts.TARIFF_UPGRADE_REQUIRED[lang]
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=texts.UPGRADE_TARIFF_BTN[lang], callback_data="start_sub")
-        ]])
-        if isinstance(event, Message):
-            await event.answer(text, reply_markup=kb)
-        else:
-            await event.message.answer(text, reply_markup=kb)
-            await event.answer()
-        return None, lang, sub
 
     return user, lang, sub
 
@@ -164,7 +157,7 @@ async def ensure_fitness_profile(
     return None
 
 async def show_smart_fitness_hub(event: Message | CallbackQuery, session: AsyncSession, state: FSMContext):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -378,7 +371,7 @@ async def finalize_profile_questionnaire(
 @router.callback_query(F.data == "hub_food_calories")
 @router.message(F.text.in_([texts.MENU_BUTTONS["food_calories"]["uz"], texts.MENU_BUTTONS["food_calories"]["ru"]]))
 async def start_calorie_counter(event: Message | CallbackQuery, session: AsyncSession, state: FSMContext):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=3)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
         
@@ -401,7 +394,7 @@ async def cancel_calorie_counter(message: Message, state: FSMContext, session: A
 
 @router.message(FitnessStates.waiting_for_food_photo, F.photo)
 async def process_food_photo(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
-    user, lang, sub = await check_guard_and_get_user(message, session, min_tariff_months=3)
+    user, lang, sub = await check_guard_and_get_user(message, session)
     if not user:
         await state.clear()
         return
@@ -473,7 +466,7 @@ async def process_food_photo(message: Message, state: FSMContext, session: Async
 @router.callback_query(F.data.in_(["hub_meal_plan", "regen_meal_plan"]))
 @router.message(F.text.in_([texts.MENU_BUTTONS["meal_plan"]["uz"], texts.MENU_BUTTONS["meal_plan"]["ru"]]))
 async def handle_meal_plan(event: Message | CallbackQuery, session: AsyncSession, state: FSMContext):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -533,7 +526,7 @@ async def handle_meal_plan(event: Message | CallbackQuery, session: AsyncSession
 @router.callback_query(F.data == "hub_allowed_foods")
 @router.message(F.text.in_([texts.MENU_BUTTONS["allowed_foods"]["uz"], texts.MENU_BUTTONS["allowed_foods"]["ru"]]))
 async def handle_allowed_foods(event: Message | CallbackQuery, session: AsyncSession):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -551,7 +544,7 @@ async def handle_allowed_foods(event: Message | CallbackQuery, session: AsyncSes
 @router.callback_query(F.data == "hub_weight_menu")
 @router.message(F.text.in_([texts.MENU_BUTTONS["weight_log"]["uz"], texts.MENU_BUTTONS["weight_log"]["ru"]]))
 async def show_weight_submenu(event: Message | CallbackQuery, session: AsyncSession):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -571,7 +564,7 @@ async def show_weight_submenu(event: Message | CallbackQuery, session: AsyncSess
 
 @router.callback_query(F.data == "hub_add_weight")
 async def start_add_weight(event: Message | CallbackQuery, session: AsyncSession, state: FSMContext):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -589,7 +582,7 @@ async def start_add_weight(event: Message | CallbackQuery, session: AsyncSession
 
 @router.callback_query(F.data == "hub_show_chart")
 async def cb_show_weight_chart(callback: CallbackQuery, session: AsyncSession):
-    user, lang, sub = await check_guard_and_get_user(callback, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(callback, session)
     if not user:
         return
 
@@ -628,7 +621,7 @@ async def cancel_weight_log(message: Message, state: FSMContext, session: AsyncS
 
 @router.message(FitnessStates.waiting_for_weight)
 async def process_weight_input(message: Message, state: FSMContext, session: AsyncSession):
-    user, lang, sub = await check_guard_and_get_user(message, session, min_tariff_months=1)
+    user, lang, sub = await check_guard_and_get_user(message, session)
     if not user:
         await state.clear()
         return
@@ -669,7 +662,7 @@ async def process_weight_input(message: Message, state: FSMContext, session: Asy
 @router.callback_query(F.data == "hub_ai_coach")
 @router.message(F.text.in_([texts.MENU_BUTTONS["ai_coach"]["uz"], texts.MENU_BUTTONS["ai_coach"]["ru"]]))
 async def start_ai_nutritionist(event: Message | CallbackQuery, session: AsyncSession, state: FSMContext):
-    user, lang, sub = await check_guard_and_get_user(event, session, min_tariff_months=3)
+    user, lang, sub = await check_guard_and_get_user(event, session)
     if not user:
         return
 
@@ -696,7 +689,7 @@ async def exit_ai_nutritionist(message: Message, state: FSMContext, session: Asy
 
 @router.message(FitnessStates.in_ai_nutritionist, F.text)
 async def process_ai_nutritionist_query(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
-    user, lang, sub = await check_guard_and_get_user(message, session, min_tariff_months=3)
+    user, lang, sub = await check_guard_and_get_user(message, session)
     if not user:
         await state.clear()
         return

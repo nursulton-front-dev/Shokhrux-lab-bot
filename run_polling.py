@@ -20,6 +20,7 @@ from bot.handlers.admin import router as admin_router
 from bot.handlers.fitness_tools import router as fitness_router
 from bot.handlers.user import router as user_router
 from bot.services.background_tasks import stop_background_tasks
+from bot.services.payment_server import run_payment_server
 from bot.services.scheduler import start_payment_delivery, start_scheduler
 from bot.services.telegram_rate_limit import TelegramRateLimitMiddleware
 
@@ -104,6 +105,7 @@ async def _run_application(bot: Bot, dp: Dispatcher, workers: list[asyncio.Task[
     workers.extend((
         asyncio.create_task(start_scheduler(bot), name="subscription-scheduler"),
         asyncio.create_task(start_payment_delivery(bot), name="payment-delivery"),
+        asyncio.create_task(run_payment_server(bot), name="payments-endpoint"),
     ))
     # aiogram retries transient getUpdates failures internally. A second outer
     # polling loop would duplicate workers and restart closed transports.

@@ -7,6 +7,10 @@
   admin there with **Ban users** and **Invite users via link** rights — it
   auto-issues personal invites on VIP purchase and auto-kicks on expiry.
 - A PostgreSQL database (Neon cloud recommended) and a Google Gemini API key.
+- `DATABASE_URL` must NOT contain `channel_binding=require` — asyncpg does not support it and
+  `bot/database/db.py` refuses to start rather than silently downgrading the connection.
+- Tariff banners are per language: `assets/Tarifs_uz.jpg` and `assets/Tarifs_ru.jpg`
+  (override with `TARIFFS_IMG_UZ` / `TARIFFS_IMG_RU`).
 - Copy `.env.example` → `.env` and fill in every value.
 - Existing DB? Run `python run_migration.py` before starting this version. It adds payment idempotency keys, the durable delivery table, and query indexes. Errors stop deployment.
 
@@ -29,7 +33,12 @@ docker compose logs -f bot
 ```
 - Uses Neon by default via `DATABASE_URL`.
 - The app runs as UID/GID 10001, with `TZ=Asia/Tashkent` and a 60-second stop grace period.
-- Logs use the named `bot_logs` volume; assets use `bot_assets`, initialized from the image on first creation. Existing host `./logs` is retained but no longer written; existing banners are baked from `./assets` at build time. To update banners after the named volume exists, copy the intended files into `/app/assets` explicitly. Do not delete volumes to update the app.
+- Logs use the named `bot_logs` volume; assets use `bot_assets`, initialized from the image on first creation. Existing host `./logs` is retained but no longer written; existing banners are baked from `./assets` at build time. **The named volume shadows the image layer: rebuilding does NOT refresh banners.** After changing `assets/`, copy them in explicitly:
+  ```bash
+  docker cp assets/Tarifs_ru.jpg fitness_bot:/app/assets/Tarifs_ru.jpg
+  docker cp assets/Tarifs_uz.jpg fitness_bot:/app/assets/Tarifs_uz.jpg
+  ```
+  Do not delete volumes to update the app.
 - Docker stdout rotates at 10 MB × 3; the app file rotates at 5 MB plus five backups.
 - To run a local Postgres instead of Neon:
   ```bash
@@ -77,7 +86,44 @@ python run_migration.py
 - `pool_pre_ping` replaces stale idle connections but cannot replay a transaction interrupted by a disconnect. Repeat the same payment action after checking its persisted status; do not blindly retry every handler's external effects.
 - Supported verification environment: Python 3.13 with a temporary local PostgreSQL 17.9, and offline Telegram/Gemini doubles. Docker image targets Python 3.12 and still needs a deployment smoke test on the actual host.
 
-## 7. Regression checks
+## 7. Payme Merchant API
+
+The bot serves Payme's JSON-RPC callbacks at `POST /api/payme` from the same
+process as Telegram polling (`payme-endpoint` worker), bound to
+`PAYME_HOST:PAYME_PORT` (default `0.0.0.0:8000`, published on the host as
+`127.0.0.1:8000`). nginx proxies the public route to it.
+
+- Credentials: `PAYME_MERCHANT_ID`, `PAYME_TEST_KEY`, `PAYME_PROD_KEY`.
+  `PAYME_SANDBOX` selects which key authenticates callbacks — exactly one key is
+  accepted at a time, so a test key can never sign production calls.
+- Auth is HTTP Basic: login `Paycom` (the merchant id is also accepted),
+  password = the active key. Every failure is returned as HTTP 200 with a
+  JSON-RPC error, as Payme expects.
+- Account parameter: `order_id`, which is `payments.id`. Amounts are quoted in
+  tiyin (1 UZS = 100 tiyin).
+- Implemented methods: `CheckPerformTransaction`, `CreateTransaction`,
+  `PerformTransaction`, `CancelTransaction`, `CheckTransaction`, `GetStatement`.
+- `payme_transactions` owns the protocol state machine. A partial unique index
+  on `payment_id WHERE state IN (1, 2)` makes double payment of one order
+  impossible; `payme_id` is the idempotency key for retries.
+- Performing a real order calls `process_successful_payment`, so the
+  subscription, cashback ledger and delivery job commit in one transaction.
+  A performed real order cannot be cancelled through the API (`-31007`):
+  channel access is already granted, so refunds are a support decision.
+- Unconfirmed transactions older than 12 hours are cancelled with reason 4.
+
+### Sandbox orders
+`create_payme_sandbox_orders.py` seeds order 101 (150 000 UZS) and 102
+(300 000 UZS) as `payment_method = payme_sandbox`, owned by a synthetic user
+(`telegram_id = -1`). They carry `tariff_months = 0`, which matches no entry in
+`TARIFF_PRICES`, so they cannot grant a subscription even by mistake; performing
+one only marks it paid. Sandbox orders are invisible when `PAYME_SANDBOX=False`.
+
+```bash
+docker exec -w /app fitness_bot python create_payme_sandbox_orders.py
+```
+
+## 8. Regression checks
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest -q tests

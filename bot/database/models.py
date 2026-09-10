@@ -1,6 +1,6 @@
 import datetime
 from typing import List, Optional
-from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float, Index
+from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float, Index, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -178,3 +178,83 @@ class UserFitnessProfile(Base):
     )
     
     user: Mapped["User"] = relationship(back_populates="fitness_profile")
+
+
+class PaymeTransaction(Base):
+    """Payme Merchant API transaction; the merchant owns this state machine.
+
+    Payme retries every method, so `payme_id` is the idempotency key. The
+    partial unique index keeps a single order from being paid twice: only one
+    transaction per order may sit in the created or performed state.
+    """
+
+    __tablename__ = "payme_transactions"
+    __table_args__ = (
+        Index(
+            "ix_payme_transactions_active_order",
+            "payment_id",
+            unique=True,
+            postgresql_where=text("state IN (1, 2)"),
+        ),
+        Index("ix_payme_transactions_payme_time", "payme_time"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payme_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    payment_id: Mapped[int] = mapped_column(
+        ForeignKey("payments.id", ondelete="CASCADE"), index=True
+    )
+    amount: Mapped[int] = mapped_column(BigInteger)  # tiyin, as quoted by Payme
+    state: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    reason: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Payme's own clock for the transaction, in milliseconds since the epoch.
+    payme_time: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    performed_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ClickTransaction(Base):
+    """Click SHOP API transaction; the merchant owns this state machine.
+
+    Click retries prepare and complete, so `click_trans_id` is the idempotency
+    key and this row's `id` is the `merchant_prepare_id` it echoes back. The
+    partial unique index keeps a single order from being paid twice: only one
+    transaction per order may sit in the prepared or confirmed state.
+    """
+
+    __tablename__ = "click_transactions"
+    __table_args__ = (
+        Index(
+            "ix_click_transactions_active_order",
+            "payment_id",
+            unique=True,
+            postgresql_where=text("state IN (1, 2)"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    click_trans_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    payment_id: Mapped[int] = mapped_column(
+        ForeignKey("payments.id", ondelete="CASCADE"), index=True
+    )
+    # Tiyin, so a decimal sum quoted by Click compares exactly against the tariff.
+    amount: Mapped[int] = mapped_column(BigInteger)
+    state: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    cancel_reason: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    click_paydoc_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    performed_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[Optional[datetime.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
