@@ -30,6 +30,7 @@ from bot.states.support import SupportState
 from bot.config import config
 from bot.services.rahmat import create_payment_intent, process_successful_payment
 from bot.services.click.protocol import build_pay_url as build_click_pay_url
+from bot.services.payment_menu import gateway_buttons
 from bot.services.payme.protocol import build_checkout_url as build_payme_checkout_url
 from bot.services.payment_policy import PaymentValidationError
 from bot import texts
@@ -146,7 +147,7 @@ async def cmd_start(message: Message, command: CommandObject, session: AsyncSess
         texts.WELCOME_TEXT[user.language],
         reply_markup=main_kb
     )
-    await show_tariffs(message, user.language)
+    await show_tariffs(message, user.language, cashback_balance=user.balance or 0)
 
 @router.callback_query(F.data.startswith("set_lang_"))
 async def cb_set_lang(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
@@ -649,7 +650,7 @@ async def check_registration_and_show_tariffs(user_id: int, message_obj: Message
         await message_obj.answer(texts.REG_ASK_NAME[lang], reply_markup=ReplyKeyboardRemove())
         await state.set_state(RegistrationStates.waiting_for_name)
     else:
-        await show_tariffs(message_obj, lang)
+        await show_tariffs(message_obj, lang, cashback_balance=user.balance or 0)
 
 @router.message(RegistrationStates.waiting_for_name, F.text)
 async def process_name(message: Message, state: FSMContext, session: AsyncSession):
@@ -708,7 +709,7 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
     
     main_kb = await get_main_menu_keyboard(session, message.from_user.id, lang)
     await message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
-    await show_tariffs(message, lang)
+    await show_tariffs(message, lang, cashback_balance=user.balance if user else 0)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -719,25 +720,32 @@ def _tariffs_banner_path(lang: str) -> str:
     return configured if os.path.isabs(configured) else os.path.join(PROJECT_ROOT, configured)
 
 
-async def show_tariffs(message_obj: Message, lang: str = "uz"):
+TARIFF_MEDALS = {"1": "🥉", "3": "🥈", "6": "🥇"}
+
+
+async def show_tariffs(message_obj: Message, lang: str = "uz", *, cashback_balance: int = 0):
+    """Tariff card with checkout on the card itself: one tap per tariff row.
+
+    Each row is `[tariff] [Payme] [Click]`. The prices stay in the caption right
+    above, so the buttons keep short labels and the whole menu fits one screen.
+    The tariff button still opens the detail screen with manual payment and the
+    cashback choice.
+    """
     lang = lang if lang in ("uz", "ru") else "uz"
     caption_text = texts.ALL_TARIFFS_CARD[lang]
     if len(caption_text) > 1024:
         caption_text = caption_text[:1021] + "..."
-    
-    t_1 = TARIFFS["1"]
-    t_3 = TARIFFS["3"]
-    t_6 = TARIFFS["6"]
-    
-    btn_1_text = f"🥉 1 {'oylik' if lang == 'uz' else 'месяц'} — {t_1['price']:,} UZS".replace(",", " ")
-    btn_3_text = f"🥈 3 {'oylik' if lang == 'uz' else 'месяца'} — {t_3['price']:,} UZS".replace(",", " ")
-    btn_6_text = f"🥇 6 {'oylik' if lang == 'uz' else 'месяцев'} — {t_6['price']:,} UZS".replace(",", " ")
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=btn_1_text, callback_data="tariff_1")],
-        [InlineKeyboardButton(text=btn_3_text, callback_data="tariff_3")],
-        [InlineKeyboardButton(text=btn_6_text, callback_data="tariff_6")]
-    ])
+
+    # Spending cashback is always cheaper for the payer; the detail screen keeps
+    # the choice to save it instead.
+    use_cashback = cashback_balance > 0
+    rows = []
+    for months in ("1", "3", "6"):
+        unit = "oylik" if lang == "uz" else "мес."
+        label = f"{TARIFF_MEDALS[months]} {months} {unit}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"tariff_{months}")]
+                    + gateway_buttons(int(months), use_cashback=use_cashback))
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     
     banner_path = _tariffs_banner_path(lang)
     if await asyncio.to_thread(os.path.exists, banner_path):
@@ -903,9 +911,13 @@ async def _send_checkout_link(callback: CallbackQuery, *, lang: str, payment: Pa
         [InlineKeyboardButton(text=open_btn[lang], url=url)],
         [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data=f"select_pay_{months}_{use_cb}")]
     ])
-    await callback.message.answer(
-        info[lang].format(order_id=payment.id, price=f"{payment.amount:,}"),
-        reply_markup=keyboard)
+    message = info[lang].format(order_id=payment.id, price=f"{payment.amount:,}")
+    if payment.cashback_applied:
+        # The quick-pay buttons spend cashback automatically; say so, or the
+        # payer sees a price that does not match the tariff card.
+        spent = "Keshbek ishlatildi" if lang == "uz" else "Кешбэк применён"
+        message += f"\n\n🎁 {spent}: −{payment.cashback_applied:,} UZS"
+    await callback.message.answer(message, reply_markup=keyboard)
     await callback.answer()
 
 

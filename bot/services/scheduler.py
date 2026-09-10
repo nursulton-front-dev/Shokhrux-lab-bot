@@ -14,6 +14,7 @@ from bot import texts
 from bot.config import config
 from bot.database.db import AsyncSessionLocal
 from bot.database.models import Payment, Subscription, User
+from bot.services.payment_menu import gateway_buttons
 from bot.services.telegram_rate_limit import kick_member, revoke_invite
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,21 @@ async def _expire_subscription(bot: Bot, subscription_id: int) -> None:
             logger.exception("Failed to notify user %s about expiration", user_id)
 
 
+def _renewal_keyboard(months: int, language: str, cashback_balance: int) -> InlineKeyboardMarkup:
+    """Renew the same tariff in one tap, with the tariff menu as the fallback.
+
+    The buttons carry callbacks rather than ready-made checkout URLs: an order is
+    minted when the payer taps, so a reminder that is never acted on leaves no
+    pending payment behind.
+    """
+    rows = []
+    quick = gateway_buttons(months, use_cashback=cashback_balance > 0)
+    if quick:
+        rows.append(quick)
+    rows.append([InlineKeyboardButton(text=texts.SUB_PROLONG[language], callback_data="start_sub")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _remind_subscription(bot: Bot, subscription_id: int, days: int) -> None:
     async with asyncio.timeout(30):
         async with AsyncSessionLocal() as session, session.begin():
@@ -128,8 +144,10 @@ async def _remind_subscription(bot: Bot, subscription_id: int, days: int) -> Non
             message = (texts.REMIND_1D if days == 1 else texts.REMIND_3D)[language].format(
                 expiry=sub.expires_at.astimezone(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
             )
+            keyboard = _renewal_keyboard(sub.tariff_months, language, user.balance or 0)
             try:
-                await bot.send_message(chat_id=user_id, text=message, request_timeout=15)
+                await bot.send_message(chat_id=user_id, text=message,
+                                       reply_markup=keyboard, request_timeout=15)
             except TelegramForbiddenError:
                 # A blocked bot cannot deliver this reminder; continue other users.
                 logger.info("Skipping reminder for unavailable user %s", user_id)
