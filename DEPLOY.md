@@ -96,6 +96,10 @@ process as Telegram polling (`payme-endpoint` worker), bound to
 - Credentials: `PAYME_MERCHANT_ID`, `PAYME_TEST_KEY`, `PAYME_PROD_KEY`.
   `PAYME_SANDBOX` selects which key authenticates callbacks — exactly one key is
   accepted at a time, so a test key can never sign production calls.
+- Launch gate: `PAYME_CHECKOUT_PAUSED` (default `True`). While on, the Merchant
+  API endpoint keeps answering Payme's callbacks, but payers see the Payme button
+  marked "(Tez kunda)" and a tap shows a "coming soon" alert instead of minting
+  an order. Set it to `False` and restart the bot to open Payme checkout.
 - Auth is HTTP Basic: login `Paycom` (the merchant id is also accepted),
   password = the active key. Every failure is returned as HTTP 200 with a
   JSON-RPC error, as Payme expects.

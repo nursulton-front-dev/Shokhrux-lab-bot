@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     def payme_enabled(self) -> bool:
         return bool(self.payme_merchant_id and self.payme_key)
 
+    # Temporary launch gate: the Merchant API endpoint keeps serving Payme's
+    # callbacks, but payers see a "coming soon" notice instead of a checkout
+    # link. Set PAYME_CHECKOUT_PAUSED=false in .env to open Payme checkout.
+    payme_checkout_paused: bool = True
+
+    @property
+    def payme_checkout_open(self) -> bool:
+        return self.payme_enabled and not self.payme_checkout_paused
+
     # ===== Click SHOP API =====
     click_service_id: Optional[int] = None
     click_merchant_id: Optional[int] = None

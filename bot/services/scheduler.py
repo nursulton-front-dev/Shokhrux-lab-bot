@@ -111,7 +111,7 @@ def _renewal_keyboard(months: int, language: str, cashback_balance: int) -> Inli
     pending payment behind.
     """
     rows = []
-    quick = gateway_buttons(months, use_cashback=cashback_balance > 0)
+    quick = gateway_buttons(months, use_cashback=cashback_balance > 0, lang=language)
     if quick:
         rows.append(quick)
     rows.append([InlineKeyboardButton(text=texts.SUB_PROLONG[language], callback_data="start_sub")])

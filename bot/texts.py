@@ -774,3 +774,71 @@ PAYME_PAY_INFO = {
         "придёт автоматически."
     ),
 }
+
+
+# Payme checkout is wired up but not yet switched on for payers: the button
+# stays visible with a "soon" mark and a tap explains where to pay meanwhile.
+PAYME_SOON_SUFFIX = {"uz": "(Tez kunda)", "ru": "(Скоро)"}
+
+PAYME_SOON_ALERT = {
+    "uz": (
+        "⏳ Tez orada...\n\n"
+        "Payme orqali to'lov tizimi tez kunlarda ishga tushiriladi. "
+        "Hozircha Click orqali to'lashingiz mumkin."
+    ),
+    "ru": (
+        "⏳ Скоро...\n\n"
+        "Оплата через Payme заработает в ближайшие дни. "
+        "Пока вы можете оплатить через Click."
+    ),
+}
+
+# Alerts shown when a checkout button is tapped on a message that can no longer
+# mint a payable order (stale, cancelled, paid, or covered by cashback).
+PAYMENT_STALE_ALERT = {
+    "uz": "To'lov muddati eskirgan. Iltimos, tarifni qaytadan tanlang.",
+    "ru": "Платёж устарел. Откройте тариф заново.",
+}
+PAYMENT_ALREADY_PAID_ALERT = {
+    "uz": "Bu buyurtma allaqachon to'langan.",
+    "ru": "Этот заказ уже оплачен.",
+}
+PAYMENT_CANCELLED_ALERT = {
+    "uz": "To'lov bekor qilingan. Iltimos, tarifni qaytadan tanlang.",
+    "ru": "Платёж отменён. Откройте тариф заново.",
+}
+PAYMENT_COVERED_BY_CASHBACK_ALERT = {
+    "uz": "Bu tarif keshbek bilan to'liq qoplanadi. Iltimos, tarifni qaytadan tanlang.",
+    "ru": "Этот тариф покрыт кешбэком. Откройте тариф заново.",
+}
+CASHBACK_INSUFFICIENT_OR_STALE_ALERT = {
+    "uz": "Keshbek yetarli emas yoki to'lov muddati eskirgan. Iltimos, tarifni qaytadan tanlang.",
+    "ru": "Недостаточно кешбэка или платёж устарел. Откройте тариф заново.",
+}
+PAYMENT_ALREADY_PROCESSED_ALERT = {
+    "uz": "Bu to'lov allaqachon qayta ishlangan.",
+    "ru": "Этот платёж уже обработан.",
+}
+SUBSCRIPTION_ACTIVATED_ALERT = {
+    "uz": "Obuna faollashtirildi. Havola avtomatik yuboriladi.",
+    "ru": "Подписка активирована. Ссылка будет отправлена автоматически.",
+}
+CLICK_UNAVAILABLE_ALERT = {
+    "uz": "Click vaqtincha ishlamayapti. Boshqa to'lov usulini tanlang.",
+    "ru": "Click временно недоступен. Выберите другой способ оплаты.",
+}
+PAYME_UNAVAILABLE_ALERT = {
+    "uz": "Payme vaqtincha ishlamayapti. Boshqa to'lov usulini tanlang.",
+    "ru": "Payme временно недоступен. Выберите другой способ оплаты.",
+}
+
+# Replaces the keyboard of a stale checkout message with a single way forward.
+OPEN_TARIFFS_AGAIN_BTN = {
+    "uz": "🔄 Tariflarni qaytadan ochish",
+    "ru": "🔄 Открыть тарифы заново",
+}
+
+SUPPORT_CANCELLED = {
+    "uz": "❌ Murojaat bekor qilindi.",
+    "ru": "❌ Обращение отменено.",
+}

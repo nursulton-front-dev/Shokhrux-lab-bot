@@ -17,10 +17,19 @@ def both_merchants(monkeypatch):
     monkeypatch.setattr(config, "click_secret_key", "click-secret")
 
 
-def test_gateway_buttons_target_the_existing_checkout_handlers(both_merchants):
+def test_gateway_buttons_target_the_existing_checkout_handlers(both_merchants, monkeypatch):
+    monkeypatch.setattr(config, "payme_checkout_paused", False)
     buttons = gateway_buttons(3, use_cashback=False)
     assert [b.text for b in buttons] == [PAYME_LABEL, CLICK_LABEL]
     assert [b.callback_data for b in buttons] == ["pay_payme_3_0", "pay_click_3_0"]
+
+
+def test_paused_payme_button_is_marked_coming_soon_in_the_payer_language(both_merchants, monkeypatch):
+    monkeypatch.setattr(config, "payme_checkout_paused", True)
+    assert gateway_buttons(3, use_cashback=False, lang="uz")[0].text == f"{PAYME_LABEL} (Tez kunda)"
+    assert gateway_buttons(3, use_cashback=False, lang="ru")[0].text == f"{PAYME_LABEL} (Скоро)"
+    # The callback stays the same: the handler decides what a tap does.
+    assert gateway_buttons(3, use_cashback=False, lang="ru")[0].callback_data == "pay_payme_3_0"
 
 
 def test_gateway_buttons_encode_the_cashback_choice(both_merchants):

@@ -5,6 +5,7 @@ from html import escape
 import logging
 import os
 from aiogram import Router, Bot, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     Message,
     ChatJoinRequest,
@@ -30,7 +31,7 @@ from bot.states.support import SupportState
 from bot.config import config
 from bot.services.rahmat import create_payment_intent, process_successful_payment
 from bot.services.click.protocol import build_pay_url as build_click_pay_url
-from bot.services.payment_menu import gateway_buttons
+from bot.services.payment_menu import gateway_buttons, payme_label
 from bot.services.payme.protocol import build_checkout_url as build_payme_checkout_url
 from bot.services.payment_policy import PaymentValidationError
 from bot import texts
@@ -204,9 +205,9 @@ async def cb_cancel_ticket(callback: CallbackQuery, state: FSMContext, session: 
     user = await session.scalar(stmt)
     lang = user.language if user and user.language else "uz"
     await state.clear()
-    await callback.message.delete()
-    main_kb = await get_main_menu_keyboard(session, callback.from_user.id, lang)
-    await callback.message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
+    # The reply keyboard never left the chat, so there is no menu to restore:
+    # just close the prompt in place instead of re-sending the welcome text.
+    await _edit_in_place(callback.message, texts.SUPPORT_CANCELLED[lang], None)
     await callback.answer()
 
 @router.message(SupportState.waiting_for_ticket_text, F.text)
@@ -637,8 +638,19 @@ async def msg_subscribe(message: Message, session: AsyncSession, state: FSMConte
 
 @router.callback_query(F.data == "start_sub")
 async def cb_start_sub(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    """Entry into the tariff flow from outside it (profile, reminders, stale
+    checkout messages): always a fresh tariff card."""
     await check_registration_and_show_tariffs(callback.from_user.id, callback.message, session, state)
     await callback.answer()
+
+
+@router.callback_query(F.data == "tariffs_back")
+async def cb_tariffs_back(callback: CallbackQuery, session: AsyncSession):
+    """«Orqaga» inside the tariff flow: redraw the tariff card in the same message."""
+    user = await session.scalar(select(User).where(User.telegram_id == callback.from_user.id))
+    lang = user.language if user and user.language else "uz"
+    balance = (user.balance or 0) if user else 0
+    await _render_screen(callback, _tariff_card_caption(lang), _tariff_card_keyboard(lang, balance))
 
 async def check_registration_and_show_tariffs(user_id: int, message_obj: Message, session: AsyncSession, state: FSMContext):
     stmt = select(User).where(User.telegram_id == user_id)
@@ -723,19 +735,16 @@ def _tariffs_banner_path(lang: str) -> str:
 TARIFF_MEDALS = {"1": "🥉", "3": "🥈", "6": "🥇"}
 
 
-async def show_tariffs(message_obj: Message, lang: str = "uz", *, cashback_balance: int = 0):
-    """Tariff card with checkout on the card itself: one tap per tariff row.
-
-    Each row is `[tariff] [Payme] [Click]`. The prices stay in the caption right
-    above, so the buttons keep short labels and the whole menu fits one screen.
-    The tariff button still opens the detail screen with manual payment and the
-    cashback choice.
-    """
+def _tariff_card_caption(lang: str) -> str:
     lang = lang if lang in ("uz", "ru") else "uz"
     caption_text = texts.ALL_TARIFFS_CARD[lang]
     if len(caption_text) > 1024:
         caption_text = caption_text[:1021] + "..."
+    return caption_text
 
+
+def _tariff_card_keyboard(lang: str, cashback_balance: int) -> InlineKeyboardMarkup:
+    lang = lang if lang in ("uz", "ru") else "uz"
     # Spending cashback is always cheaper for the payer; the detail screen keeps
     # the choice to save it instead.
     use_cashback = cashback_balance > 0
@@ -744,8 +753,73 @@ async def show_tariffs(message_obj: Message, lang: str = "uz", *, cashback_balan
         unit = "oylik" if lang == "uz" else "мес."
         label = f"{TARIFF_MEDALS[months]} {months} {unit}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"tariff_{months}")]
-                    + gateway_buttons(int(months), use_cashback=use_cashback))
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+                    + gateway_buttons(int(months), use_cashback=use_cashback, lang=lang))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _edit_in_place(message: Message | None, text: str,
+                         keyboard: InlineKeyboardMarkup | None) -> bool:
+    """Redraw a screen inside the message it was tapped on.
+
+    Photo messages (the tariff card) take the text as caption, plain ones as
+    text. Returns False when Telegram refuses the edit (message too old,
+    deleted, or inaccessible) so the caller can fall back to a fresh message.
+    An unchanged screen is not an error: Telegram reports it as
+    "message is not modified" and the button tap is simply acknowledged.
+    """
+    if not isinstance(message, Message):
+        return False
+    try:
+        if message.photo:
+            await message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return True
+        logger.warning("In-place edit of message %s failed: %s", message.message_id, exc)
+        return False
+    return True
+
+
+async def _render_screen(callback: CallbackQuery, text: str, keyboard: InlineKeyboardMarkup) -> None:
+    """Show the next tariff-flow screen in the tapped message; send a new one
+    only if that message can no longer be edited."""
+    if not await _edit_in_place(callback.message, text, keyboard):
+        if isinstance(callback.message, Message):
+            await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            await callback.bot.send_message(callback.message.chat.id, text,
+                                            reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
+async def _mark_checkout_stale(callback: CallbackQuery, lang: str) -> None:
+    """Swap the dead checkout buttons for a single way back into the tariff menu."""
+    if not isinstance(callback.message, Message):
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=texts.OPEN_TARIFFS_AGAIN_BTN[lang], callback_data="start_sub")]
+    ])
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc):
+            logger.warning("Could not replace stale checkout keyboard on %s: %s",
+                           callback.message.message_id, exc)
+
+
+async def show_tariffs(message_obj: Message, lang: str = "uz", *, cashback_balance: int = 0):
+    """Tariff card with checkout on the card itself: one tap per tariff row.
+
+    Each row is `[tariff] [Payme] [Click]`. The prices stay in the caption right
+    above, so the buttons keep short labels and the whole menu fits one screen.
+    The tariff button still opens the detail screen with manual payment and the
+    cashback choice. Every later screen of the flow edits this same message.
+    """
+    lang = lang if lang in ("uz", "ru") else "uz"
+    caption_text = _tariff_card_caption(lang)
+    kb = _tariff_card_keyboard(lang, cashback_balance)
     
     banner_path = _tariffs_banner_path(lang)
     if await asyncio.to_thread(os.path.exists, banner_path):
@@ -776,15 +850,14 @@ async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=texts.CASHBACK_USE_BTN[lang], callback_data=f"select_pay_{tariff_months}_1")],
             [InlineKeyboardButton(text=texts.CASHBACK_FULL_BTN[lang], callback_data=f"select_pay_{tariff_months}_0")],
-            [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")]
+            [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="tariffs_back")]
         ])
         text = texts.CASHBACK_ASK[lang].format(
             balance=f"{user.balance:,}",
             tariff_price=f"{tariff_price:,}",
             final_price=f"{final_price:,}"
         )
-        await callback.message.answer(text, reply_markup=kb)
-        await callback.answer()
+        await _render_screen(callback, text, kb)
     else:
         await render_payment_info(callback, tariff_months, use_cb=0, session=session)
 
@@ -825,7 +898,7 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
         btn_label = "⚡️ Keshbek bilan faollashtirish (0 UZS)" if lang == "uz" else "⚡️ Активировать за кешбэк (0 UZS)"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=btn_label, callback_data=f"pay_cashback_full_{tariff_months}")],
-            [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")]
+            [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="tariffs_back")]
         ])
     else:
         manual_label = f"💳 Qo'lda to'lash (Karta)" if lang == "uz" else f"💳 Ручная оплата (Карта)"
@@ -837,11 +910,12 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
                 text=texts.CLICK_PAY_BTN[lang], callback_data=f"pay_click_{tariff_months}_{use_cb}"))
         if config.payme_enabled:
             gateway_row.append(InlineKeyboardButton(
-                text=texts.PAYME_PAY_BTN[lang], callback_data=f"pay_payme_{tariff_months}_{use_cb}"))
+                text=payme_label(lang, texts.PAYME_PAY_BTN[lang]),
+                callback_data=f"pay_payme_{tariff_months}_{use_cb}"))
         if gateway_row:
             rows.append(gateway_row)
         # rows.append([InlineKeyboardButton(text=manual_label, callback_data=f"pay_manual_{tariff_months}_{use_cb}")])
-        rows.append([InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")])
+        rows.append([InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="tariffs_back")])
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     
     price_text = f"<s>{orig_price:,}</s> ➔ <b>{final_price:,} UZS</b> (Keshbek: -{cashback_used:,} UZS)" if cashback_used > 0 else f"<b>{orig_price:,} UZS</b>"
@@ -852,8 +926,7 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
         expires_at=expiry_date_str
     )
     
-    await callback.message.answer(text, reply_markup=keyboard)
-    await callback.answer()
+    await _render_screen(callback, text, keyboard)
 
 @router.callback_query(F.data.regexp(r"^pay_rahmat_(1|3|6)(_[01])?$"))
 async def cb_pay_rahmat(callback: CallbackQuery, session: AsyncSession, bot: Bot):
@@ -868,39 +941,50 @@ def _payment_request_key(callback: CallbackQuery, method: str, months: int, use_
 @router.callback_query(F.data.regexp(r"^pay_cashback_full_(1|3|6)$"))
 async def cb_pay_cashback_full(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     months = int(callback.data.rsplit("_", 1)[1])
+    lang = await _payer_language(session, callback.from_user.id)
     try:
         payment = await create_payment_intent(
             session, user_id=callback.from_user.id, months=months, method="cashback", use_cashback=True,
             request_key=_payment_request_key(callback, "cashback", months, True))
         ok = await process_successful_payment(payment.id, session, bot)
     except PaymentValidationError:
-        await callback.answer("Недостаточно кешбэка или платёж устарел. Откройте тариф заново.", show_alert=True)
+        await callback.answer(texts.CASHBACK_INSUFFICIENT_OR_STALE_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
         return
-    await callback.answer("Подписка активирована. Ссылка будет отправлена автоматически." if ok
-                          else "Этот платёж уже обработан.", show_alert=True)
+    await callback.answer(texts.SUBSCRIPTION_ACTIVATED_ALERT[lang] if ok
+                          else texts.PAYMENT_ALREADY_PROCESSED_ALERT[lang], show_alert=True)
 
 async def _create_gateway_order(callback: CallbackQuery, session: AsyncSession, *,
-                               method: str, months: int, use_cb: int) -> Payment | None:
-    """Mint the pending order a hosted checkout will confirm, or explain why not."""
+                               method: str, months: int, use_cb: int, lang: str) -> Payment | None:
+    """Mint the pending order a hosted checkout will confirm, or explain why not.
+
+    Every refusal below means the tapped message can never produce a payable
+    order again, so its checkout buttons are replaced with a single button that
+    opens a fresh tariff menu.
+    """
     try:
         payment = await create_payment_intent(
             session, user_id=callback.from_user.id, months=months, method=method,
             use_cashback=bool(use_cb),
             request_key=_payment_request_key(callback, method, months, bool(use_cb)))
     except PaymentValidationError:
-        await callback.answer("Платёж устарел. Откройте тариф заново.", show_alert=True)
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
         return None
     if payment.status == "completed":
-        await callback.answer("Этот заказ уже оплачен.", show_alert=True)
+        await callback.answer(texts.PAYMENT_ALREADY_PAID_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
         return None
     if payment.status != "pending":
         # A cancelled attempt closes its order for good; a fresh tariff screen
         # mints a new one, so a stale checkout link stays unpayable.
-        await callback.answer("Платёж отменён. Откройте тариф заново.", show_alert=True)
+        await callback.answer(texts.PAYMENT_CANCELLED_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
         return None
     if payment.amount <= 0:
         # A fully covered tariff is activated by cashback, never by a 0 UZS invoice.
-        await callback.answer("Этот тариф покрыт кешбэком. Откройте тариф заново.", show_alert=True)
+        await callback.answer(texts.PAYMENT_COVERED_BY_CASHBACK_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
         return None
     return payment
 
@@ -917,8 +1001,7 @@ async def _send_checkout_link(callback: CallbackQuery, *, lang: str, payment: Pa
         # payer sees a price that does not match the tariff card.
         spent = "Keshbek ishlatildi" if lang == "uz" else "Кешбэк применён"
         message += f"\n\n🎁 {spent}: −{payment.cashback_applied:,} UZS"
-    await callback.message.answer(message, reply_markup=keyboard)
-    await callback.answer()
+    await _render_screen(callback, message, keyboard)
 
 
 async def _payer_language(session: AsyncSession, user_id: int) -> str:
@@ -933,9 +1016,10 @@ async def cb_pay_click(callback: CallbackQuery, session: AsyncSession):
     months, use_cb = int(months_raw), int(use_cb_raw)
     lang = await _payer_language(session, callback.from_user.id)
     if not config.click_enabled:
-        await callback.answer("Click временно недоступен. Используйте оплату картой.", show_alert=True)
+        await callback.answer(texts.CLICK_UNAVAILABLE_ALERT[lang], show_alert=True)
         return
-    payment = await _create_gateway_order(callback, session, method="click", months=months, use_cb=use_cb)
+    payment = await _create_gateway_order(callback, session, method="click", months=months,
+                                          use_cb=use_cb, lang=lang)
     if payment is None:
         return
     url = build_click_pay_url(service_id=config.click_service_id, merchant_id=config.click_merchant_id,
@@ -947,14 +1031,22 @@ async def cb_pay_click(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.regexp(r"^pay_payme_(1|3|6)_[01]$"))
 async def cb_pay_payme(callback: CallbackQuery, session: AsyncSession):
-    """Same flow as Click, against the Payme hosted checkout."""
+    """Same flow as Click, against the Payme hosted checkout.
+
+    While `config.payme_checkout_paused` is on, a tap only shows the "coming
+    soon" notice: no order is minted and no checkout link is built.
+    """
     _, _, months_raw, use_cb_raw = callback.data.split("_")
     months, use_cb = int(months_raw), int(use_cb_raw)
     lang = await _payer_language(session, callback.from_user.id)
     if not config.payme_enabled:
-        await callback.answer("Payme временно недоступен. Используйте оплату картой.", show_alert=True)
+        await callback.answer(texts.PAYME_UNAVAILABLE_ALERT[lang], show_alert=True)
         return
-    payment = await _create_gateway_order(callback, session, method="payme", months=months, use_cb=use_cb)
+    if config.payme_checkout_paused:
+        await callback.answer(texts.PAYME_SOON_ALERT[lang], show_alert=True)
+        return
+    payment = await _create_gateway_order(callback, session, method="payme", months=months,
+                                          use_cb=use_cb, lang=lang)
     if payment is None:
         return
     url = build_payme_checkout_url(merchant_id=config.payme_merchant_id,
