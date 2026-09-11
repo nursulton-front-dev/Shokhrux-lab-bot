@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import ClickTransaction, Payment
 from bot.services.click import errors
 from bot.services.click.protocol import (
+    CANCEL_REASON_REJECTED,
     CANCEL_REASON_TIMEOUT,
     CLICK_METHODS,
     PREPARE_TIMEOUT,
@@ -25,7 +26,7 @@ from bot.services.click.protocol import (
     ClickRequest,
     sum_to_tiyin,
 )
-from bot.services.payment_policy import PaymentValidationError
+from bot.services.payment_policy import PaymentValidationError, assert_order_matches_tariff
 from bot.services.rahmat import process_successful_payment
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,30 @@ async def _load_order(session: AsyncSession, order_id: int, *, lock: bool = Fals
     return payment
 
 
+def _assert_order_terms(payment: Payment) -> None:
+    """The order must still price its tariff; otherwise no money may move for it.
+
+    Checked before Prepare answers, so an order edited after it was minted is
+    refused before Click debits the payer, not after.
+    """
+    try:
+        assert_order_matches_tariff(amount=payment.amount, cashback_applied=payment.cashback_applied,
+                                    tariff_months=payment.tariff_months,
+                                    payment_method=payment.payment_method)
+    except PaymentValidationError as exc:
+        raise errors.ClickError(
+            errors.INCORRECT_AMOUNT,
+            f"order {payment.id}: {exc} (amount={payment.amount}, cashback={payment.cashback_applied},"
+            f" tariff_months={payment.tariff_months})") from None
+
+
 def _assert_payable(payment: Payment, amount_tiyin: int) -> None:
     if payment.status == "completed":
         raise errors.ClickError(errors.ALREADY_PAID, f"order {payment.id} is already paid")
     if payment.status != "pending":
         raise errors.ClickError(errors.TRANSACTION_CANCELLED, f"order {payment.id} is {payment.status}")
+    _assert_order_terms(payment)
+    # Both sides in tiyin: Click quotes "500000.00", the order stores 500000 UZS.
     if amount_tiyin != sum_to_tiyin(payment.amount):
         raise errors.ClickError(errors.INCORRECT_AMOUNT, f"order {payment.id} costs {payment.amount} UZS")
 
@@ -167,13 +187,28 @@ async def complete(session: AsyncSession, request: ClickRequest, bot: Bot | None
     if bot is None:
         raise errors.ClickError(errors.UPDATE_FAILED, "bot runtime is unavailable")
 
+    # Re-check the terms Prepare accepted: the row may have been edited since.
+    # A violation is permanent, so answer with a final code and release the
+    # order instead of leaving it reserved for Click to retry against.
+    payment = await _load_order(session, transaction.payment_id)
+    try:
+        _assert_order_terms(payment)
+    except errors.ClickError as exc:
+        await _cancel_prepared(session, transaction, CANCEL_REASON_REJECTED)
+        raise exc
+
     transaction.state = STATE_CONFIRMED
     transaction.performed_at = _utcnow()
     try:
         committed = await process_successful_payment(transaction.payment_id, session, bot)
     except PaymentValidationError as exc:
+        # process_successful_payment rolled the session back, which also
+        # discarded the state change above; reload the row before cancelling.
         logger.exception("Click transaction %s rejected by payment policy", request.click_trans_id)
-        raise errors.ClickError(errors.UPDATE_FAILED, str(exc)) from None
+        rejected = await _lock_transaction(session, request.click_trans_id)
+        if rejected is not None and rejected.state == STATE_PREPARED:
+            await _cancel_prepared(session, rejected, CANCEL_REASON_REJECTED)
+        raise errors.ClickError(errors.INCORRECT_AMOUNT, str(exc)) from None
     if committed:
         return transaction.id
     return await _finish_already_paid_order(session, request.click_trans_id)

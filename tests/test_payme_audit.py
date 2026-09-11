@@ -177,6 +177,18 @@ async def test_check_perform_rejects_wrong_amount(client, db):
 
 
 @pytest.mark.asyncio
+async def test_check_perform_rejects_a_real_order_that_no_longer_prices_its_tariff(client, db):
+    await seed_order(db, order_id=118, amount=1_000, method=METHOD_PAYME, months=REAL_TARIFF_MONTHS)
+    body = await call(client, "CheckPerformTransaction",
+                      {"amount": 1_000 * 100, "account": {"order_id": 118}})
+    assert body["error"]["code"] == errors.WRONG_AMOUNT
+    created = await call(client, "CreateTransaction",
+                         {"id": "tx-tampered", "time": now_ms(), "amount": 1_000 * 100,
+                          "account": {"order_id": 118}})
+    assert created["error"]["code"] == errors.WRONG_AMOUNT
+
+
+@pytest.mark.asyncio
 async def test_check_perform_rejects_already_paid_order(client, db):
     await seed_order(db, order_id=101, amount=SANDBOX_AMOUNT, status="completed")
     body = await call(client, "CheckPerformTransaction",
@@ -215,10 +227,10 @@ async def test_second_transaction_for_same_order_is_refused(client, db):
                {"id": "tx-1", "time": now_ms(), "amount": amount, "account": {"order_id": 101}})
     body = await call(client, "CreateTransaction",
                       {"id": "tx-2", "time": now_ms(), "amount": amount, "account": {"order_id": 101}})
-    assert body["error"]["code"] == errors.UNABLE_TO_PERFORM
-    # The refusal must come from the duplicate-order guard, not a crash that
-    # the catch-all handler reported with the same code.
-    assert body["error"]["data"] == "order 101 is already being paid"
+    # A distinct account-range code, so the refusal cannot be confused with a
+    # crash that the catch-all handler reports as UNABLE_TO_PERFORM.
+    assert body["error"]["code"] == errors.ORDER_ALREADY_BEING_PAID
+    assert body["error"]["data"] == errors.ACCOUNT_FIELD
 
 
 @pytest.mark.asyncio
@@ -231,7 +243,7 @@ async def test_concurrent_creates_produce_one_transaction(client, db):
         for index in range(10)
     ))
     assert sum("result" in body for body in bodies) == 1
-    assert all(body["error"]["data"] == "order 101 is already being paid"
+    assert all(body["error"]["code"] == errors.ORDER_ALREADY_BEING_PAID
                for body in bodies if "error" in body)
     async with db() as session:
         live = await session.scalar(select(func.count()).select_from(PaymeTransaction).where(

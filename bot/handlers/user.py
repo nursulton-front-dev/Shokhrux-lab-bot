@@ -840,7 +840,7 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
                 text=texts.PAYME_PAY_BTN[lang], callback_data=f"pay_payme_{tariff_months}_{use_cb}"))
         if gateway_row:
             rows.append(gateway_row)
-        rows.append([InlineKeyboardButton(text=manual_label, callback_data=f"pay_manual_{tariff_months}_{use_cb}")])
+        # rows.append([InlineKeyboardButton(text=manual_label, callback_data=f"pay_manual_{tariff_months}_{use_cb}")])
         rows.append([InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="start_sub")])
         keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     

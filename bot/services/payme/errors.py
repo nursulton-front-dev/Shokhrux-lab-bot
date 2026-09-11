@@ -20,6 +20,8 @@ UNABLE_TO_PERFORM = -31008
 # Payme reserves -31050..-31099 for `account` field errors; -31050 is the
 # conventional "unknown order" code and carries the field name in `data`.
 ORDER_NOT_FOUND = -31050
+# Same range: the order exists but another live transaction already holds it.
+ORDER_ALREADY_BEING_PAID = -31051
 
 ACCOUNT_FIELD = "order_id"
 
@@ -97,3 +99,11 @@ def cannot_cancel_performed() -> PaymeError:
         "Заказ выполнен. Отмена невозможна",
         "Buyurtma bajarilgan. Bekor qilib bo'lmaydi",
         "Order has been delivered. Cancellation is not possible"))
+
+
+def order_already_being_paid() -> PaymeError:
+    # An account-range code must carry the field name in `data`, so the
+    # duplicate-order detail is logged by the caller instead of sent here.
+    return PaymeError(ORDER_ALREADY_BEING_PAID, _message(
+        "Заказ уже находится в процессе оплаты", "Buyurtma allaqachon to'lov jarayonida",
+        "Order is already being paid"), data=ACCOUNT_FIELD)

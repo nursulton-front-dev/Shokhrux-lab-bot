@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import config
 from bot.database.models import CashbackTransaction, Payment, PaymentDelivery, Subscription, User
-from bot.services.payment_policy import PaymentValidationError, TARIFF_PRICES
+from bot.services.payment_policy import (
+    PaymentValidationError, TARIFF_PRICES, assert_order_matches_tariff,
+)
 
 
 async def generate_invoice_link(amount: int, user_id: int, tariff_months: int, payment_id: int) -> str:
@@ -100,12 +102,12 @@ async def process_successful_payment(payment_id: int, session: AsyncSession, bot
         if payment is None or user is None or payment.status != "pending":
             await session.rollback()
             return False
-        price = TARIFF_PRICES.get(payment.tariff_months)
+        # Same invariant the gateways check before reserving the order; kept
+        # here too because this is the only place that grants a subscription.
+        assert_order_matches_tariff(amount=payment.amount, cashback_applied=payment.cashback_applied,
+                                    tariff_months=payment.tariff_months,
+                                    payment_method=payment.payment_method)
         cashback = payment.cashback_applied or 0
-        if (price is None or payment.amount < 0 or cashback < 0
-                or payment.amount + cashback != price
-                or (payment.payment_method == "cashback" and payment.amount != 0)):
-            raise PaymentValidationError("Payment amount does not match its tariff")
         if (user.balance or 0) < cashback:
             raise PaymentValidationError("Insufficient cashback; reconcile the pending payment")
         completed_count = await session.scalar(select(func.count()).select_from(Payment).where(

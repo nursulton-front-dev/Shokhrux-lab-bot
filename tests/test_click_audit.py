@@ -125,7 +125,28 @@ def test_pay_url_matches_the_click_checkout_contract():
     assert protocol.build_pay_url(service_id=SERVICE_ID, merchant_id=MERCHANT_ID,
                                   amount=500_000, order_id=42) == (
         "https://my.click.uz/services/pay?service_id=111815&merchant_id=64579"
-        "&amount=500000&transaction_param=42")
+        "&amount=500000.00&transaction_param=42")
+
+
+@pytest.mark.parametrize("order_id", ["42", "tariff_1", 0, -1, True, None])
+def test_pay_url_refuses_anything_but_a_positive_int_order_id(order_id):
+    with pytest.raises(ValueError):
+        protocol.build_pay_url(service_id=SERVICE_ID, merchant_id=MERCHANT_ID,
+                               amount=500_000, order_id=order_id)
+
+
+@pytest.mark.parametrize("amount", ["500000", 500_000.0, 0, -1])
+def test_pay_url_refuses_a_non_integer_or_non_positive_amount(amount):
+    with pytest.raises(ValueError):
+        protocol.build_pay_url(service_id=SERVICE_ID, merchant_id=MERCHANT_ID,
+                               amount=amount, order_id=42)
+
+
+def test_link_prepare_and_complete_quote_the_same_amount_string():
+    url = protocol.build_pay_url(service_id=SERVICE_ID, merchant_id=MERCHANT_ID,
+                                 amount=TARIFF_PRICE, order_id=42)
+    quoted = url.split("amount=")[1].split("&")[0]
+    assert protocol.to_tiyin(quoted) == protocol.sum_to_tiyin(TARIFF_PRICE) == 50_000_000
 
 
 @pytest.mark.asyncio
@@ -191,6 +212,32 @@ async def test_wrong_amount_is_rejected(client, db):
 
 
 @pytest.mark.asyncio
+async def test_prepare_refuses_an_order_that_no_longer_prices_its_tariff(client, db):
+    # Order edited after minting (e.g. "UPDATE payments SET amount=1000"): the
+    # checkout link and Prepare agree on 1000, but the tariff costs 500000.
+    await seed_order(db, order_id=230, amount=1_000)
+    body = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=30, merchant_trans_id=230, amount="1000.00"))
+    assert body["error"] == errors.INCORRECT_AMOUNT
+    assert "merchant_prepare_id" not in body
+    async with db() as session:
+        assert await session.scalar(select(ClickTransaction)) is None
+        assert (await session.get(Payment, 230)).status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_prepare_accepts_an_order_partly_covered_by_cashback(client, db):
+    async with db() as session:
+        session.add(User(telegram_id=USER_ID, balance=100_000, language="ru"))
+        session.add(Payment(id=231, user_id=USER_ID, amount=400_000, tariff_months=1,
+                            status="pending", payment_method=METHOD_CLICK, cashback_applied=100_000))
+        await session.commit()
+    body = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=31, merchant_trans_id=231, amount="400000.00"))
+    assert body["error"] == errors.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_prepare_reserves_the_order_and_is_idempotent(client, db):
     await seed_order(db, order_id=206)
     fields = form(ACTION_PREPARE, click_trans_id=8, merchant_trans_id=206, amount="500000.00")
@@ -250,6 +297,58 @@ async def test_complete_grants_the_subscription_exactly_once(client, db):
             select(Subscription).where(Subscription.user_id == USER_ID))).all()
         assert len(subscriptions) == 1
         assert subscriptions[0].tariff_months == TARIFF_MONTHS
+
+
+@pytest.mark.asyncio
+async def test_complete_cancels_an_order_edited_after_prepare(client, db):
+    await seed_order(db, order_id=232)
+    prepared = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=32, merchant_trans_id=232, amount="500000.00"))
+    async with db() as session:
+        (await session.get(Payment, 232)).tariff_months = 6  # now worth 2 300 000
+        await session.commit()
+    confirm = form(ACTION_COMPLETE, click_trans_id=32, merchant_trans_id=232,
+                   amount="500000.00", merchant_prepare_id=prepared["merchant_prepare_id"])
+    body = await call(client, ACTION_COMPLETE, confirm)
+    assert body["error"] == errors.INCORRECT_AMOUNT
+    assert "merchant_confirm_id" not in body
+    async with db() as session:
+        assert (await session.get(Payment, 232)).status == "failed"
+        transaction = await session.scalar(select(ClickTransaction))
+        assert transaction.state == STATE_CANCELLED
+        assert transaction.cancel_reason == protocol.CANCEL_REASON_REJECTED
+        assert (await session.scalars(
+            select(Subscription).where(Subscription.user_id == USER_ID))).all() == []
+    # Click retrying the same Complete now gets a final answer, not -7 forever.
+    retried = await call(client, ACTION_COMPLETE, confirm)
+    assert retried["error"] == errors.TRANSACTION_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_policy_rejection_inside_the_money_commit_is_final(client, db, monkeypatch):
+    # Defence in depth: even if the pre-check is bypassed, a rejection raised by
+    # process_successful_payment releases the order instead of freezing it.
+    from bot.services.click import service
+    from bot.services.payment_policy import PaymentValidationError
+
+    await seed_order(db, order_id=233)
+    prepared = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=33, merchant_trans_id=233, amount="500000.00"))
+
+    async def refuse(payment_id, session, bot):
+        await session.rollback()
+        raise PaymentValidationError("Payment amount does not match its tariff")
+
+    monkeypatch.setattr(service, "process_successful_payment", refuse)
+    body = await call(client, ACTION_COMPLETE, form(
+        ACTION_COMPLETE, click_trans_id=33, merchant_trans_id=233, amount="500000.00",
+        merchant_prepare_id=prepared["merchant_prepare_id"]))
+    assert body["error"] == errors.INCORRECT_AMOUNT
+    async with db() as session:
+        assert (await session.get(Payment, 233)).status == "failed"
+        transaction = await session.scalar(select(ClickTransaction))
+        assert transaction.state == STATE_CANCELLED
+        assert transaction.cancel_reason == protocol.CANCEL_REASON_REJECTED
 
 
 @pytest.mark.asyncio

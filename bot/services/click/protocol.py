@@ -30,6 +30,8 @@ STATE_CANCELLED_AFTER_CONFIRM = -2
 # merchant releases the order instead of holding it reserved forever.
 PREPARE_TIMEOUT = datetime.timedelta(hours=12)
 CANCEL_REASON_TIMEOUT = -9
+# The order stopped pricing its tariff between Prepare and Complete.
+CANCEL_REASON_REJECTED = -2
 
 # Click quotes sums in UZS with decimals; the bot stores tariffs in whole UZS.
 TIYIN_PER_SUM = 100
@@ -58,11 +60,20 @@ class ClickRequest:
 
 
 def build_pay_url(*, service_id: int, merchant_id: int, amount: int, order_id: int) -> str:
-    """Checkout link for an order priced in whole UZS."""
+    """Checkout link for an order priced in whole UZS.
+
+    `transaction_param` is the order id (`payments.id`) and comes back verbatim
+    as `merchant_trans_id`; `amount` is rendered the way Click echoes it
+    ("500000.00"), so the link, Prepare and Complete all quote the same string.
+    """
+    if not isinstance(order_id, int) or isinstance(order_id, bool) or order_id <= 0:
+        raise ValueError(f"order_id must be a positive int, got {order_id!r}")
+    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        raise ValueError(f"amount must be a positive int of UZS, got {amount!r}")
     query = urlencode({
         "service_id": service_id,
         "merchant_id": merchant_id,
-        "amount": amount,
+        "amount": f"{amount:.2f}",
         "transaction_param": order_id,
     })
     return f"{PAY_URL}?{query}"

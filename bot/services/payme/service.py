@@ -30,7 +30,7 @@ from bot.services.payme.protocol import (
     to_ms,
     to_tiyin,
 )
-from bot.services.payment_policy import PaymentValidationError
+from bot.services.payment_policy import PaymentValidationError, assert_order_matches_tariff
 from bot.services.rahmat import process_successful_payment
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,15 @@ async def _load_order(session: AsyncSession, order_id: int, *, lock: bool = Fals
 def _assert_payable(payment: Payment, amount_tiyin: int) -> None:
     if payment.status != "pending":
         raise errors.unable_to_perform(f"order {payment.id} is {payment.status}")
+    if payment.payment_method != METHOD_PAYME_SANDBOX:
+        # Sandbox orders carry no tariff; real ones must still price theirs,
+        # or PerformTransaction would fail after Payme has taken the money.
+        try:
+            assert_order_matches_tariff(
+                amount=payment.amount, cashback_applied=payment.cashback_applied,
+                tariff_months=payment.tariff_months, payment_method=payment.payment_method)
+        except PaymentValidationError:
+            raise errors.wrong_amount() from None
     if amount_tiyin != to_tiyin(payment.amount):
         raise errors.wrong_amount()
 
@@ -197,7 +206,8 @@ async def create_transaction(session: AsyncSession, params: dict[str, Any]) -> d
         # The partial unique index rejected a second live transaction for this
         # order, or a concurrent request already created this payme_id.
         await session.rollback()
-        raise errors.unable_to_perform(f"order {paid_order_id} is already being paid") from None
+        logger.info("Payme order %s is already being paid; refusing %s", paid_order_id, payme_id)
+        raise errors.order_already_being_paid() from None
     return _created_result(transaction)
 
 
