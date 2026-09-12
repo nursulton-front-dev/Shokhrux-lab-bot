@@ -70,11 +70,12 @@ def test_router_registration():
 
     def _register():
         from aiogram import Dispatcher
-        from bot.handlers.user import router as user_router
+        from bot.handlers.user import router as user_router, start_router
         from bot.handlers.admin import router as admin_router
         from bot.handlers.fitness_tools import router as fitness_router
 
         dp = Dispatcher()
+        dp.include_router(start_router)
         dp.include_router(admin_router)
         dp.include_router(fitness_router)
         dp.include_router(user_router)

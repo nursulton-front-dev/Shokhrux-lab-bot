@@ -11,8 +11,9 @@ import dataclasses
 import datetime
 import hashlib
 import hmac
+import re
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from urllib.parse import urlencode
 
 from bot.services.click import errors
@@ -81,12 +82,16 @@ def build_pay_url(*, service_id: int, merchant_id: int, amount: int, order_id: i
 
 def to_tiyin(amount: str) -> int | None:
     """Convert Click's decimal sum to tiyin so comparisons stay exact."""
+    if not isinstance(amount, str) or not re.fullmatch(r"[0-9]{1,16}(?:\.[0-9]{1,16})?", amount.strip()):
+        return None
     try:
         value = Decimal(amount.strip())
     except (AttributeError, InvalidOperation):
         return None
-    tiyin = value.scaleb(2)
-    if tiyin < 0 or tiyin != tiyin.to_integral_value():
+    with localcontext() as context:
+        context.prec = 40
+        tiyin = value.scaleb(2)
+    if not tiyin.is_finite() or tiyin < 0 or tiyin > 2**63 - 1 or tiyin != tiyin.to_integral_value():
         return None
     return int(tiyin)
 
@@ -106,9 +111,12 @@ def expected_signature(secret_key: str, raw: Mapping[str, str], action: int) -> 
 
 def _require_int(raw: Mapping[str, str], field: str, code: int) -> int:
     value = raw.get(field, "").strip()
-    if not value.lstrip("-").isdigit():
+    if not re.fullmatch(r"-?[0-9]{1,19}", value):
         raise errors.ClickError(code, f"{field}={value!r} is not an integer")
-    return int(value)
+    parsed = int(value)
+    if not -(2**63) <= parsed <= 2**63 - 1:
+        raise errors.ClickError(code, f"{field} is outside bigint range")
+    return parsed
 
 
 def parse_request(
@@ -124,12 +132,13 @@ def parse_request(
     missing = [field for field in REQUIRED_FIELDS if not raw.get(field, "").strip()]
     if missing:
         raise errors.ClickError(errors.BAD_REQUEST, f"missing fields: {','.join(missing)}")
-    if any(len(raw[field]) > MAX_FIELD_LENGTH for field in REQUIRED_FIELDS):
+    if any(len(value) > MAX_FIELD_LENGTH for value in raw.values()):
         raise errors.ClickError(errors.BAD_REQUEST, "field longer than the protocol allows")
     if _require_int(raw, "action", errors.ACTION_NOT_FOUND) != action:
         raise errors.ClickError(errors.ACTION_NOT_FOUND, f"action={raw['action']!r} on this endpoint")
     digest = expected_signature(secret_key, raw, action)
-    if not hmac.compare_digest(raw["sign_string"].strip().lower(), digest):
+    supplied = raw["sign_string"].strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", supplied) or not hmac.compare_digest(supplied, digest):
         raise errors.ClickError(errors.SIGN_CHECK_FAILED, "sign_string does not match")
     if _require_int(raw, "service_id", errors.BAD_REQUEST) != service_id:
         raise errors.ClickError(errors.BAD_REQUEST, "callback addressed to another service_id")
@@ -138,7 +147,7 @@ def parse_request(
     if amount_tiyin is None or amount_tiyin <= 0:
         raise errors.ClickError(errors.INCORRECT_AMOUNT, f"amount={raw['amount']!r}")
     order_field = raw["merchant_trans_id"].strip()
-    if not order_field.isdigit():
+    if not re.fullmatch(r"[0-9]{1,10}", order_field) or not 0 < int(order_field) <= 2**31 - 1:
         raise errors.ClickError(errors.ORDER_NOT_FOUND, f"merchant_trans_id={order_field!r}")
     merchant_prepare_id = None
     if action == ACTION_COMPLETE:
@@ -148,7 +157,7 @@ def parse_request(
         action=action,
         click_trans_id=_require_int(raw, "click_trans_id", errors.BAD_REQUEST),
         service_id=service_id,
-        click_paydoc_id=int(paydoc) if paydoc.isdigit() else None,
+        click_paydoc_id=_require_int(raw, "click_paydoc_id", errors.BAD_REQUEST) if paydoc else None,
         order_id=int(order_field),
         merchant_prepare_id=merchant_prepare_id,
         amount_tiyin=amount_tiyin,

@@ -18,7 +18,7 @@ from bot.config import config
 from bot.database.db import AsyncSessionLocal, engine, init_db
 from bot.handlers.admin import router as admin_router
 from bot.handlers.fitness_tools import router as fitness_router
-from bot.handlers.user import router as user_router
+from bot.handlers.user import router as user_router, start_router
 from bot.services.background_tasks import stop_background_tasks
 from bot.services.payment_server import run_payment_server
 from bot.services.scheduler import start_payment_delivery, start_scheduler
@@ -134,6 +134,7 @@ async def main() -> None:
         bot.session.middleware(TelegramRateLimitMiddleware())
         dp = Dispatcher(events_isolation=SimpleEventIsolation())
         dp.update.middleware(DBSessionMiddleware())
+        dp.include_router(start_router)
         dp.include_router(admin_router)
         dp.include_router(fitness_router)
         dp.include_router(user_router)

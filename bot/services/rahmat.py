@@ -6,9 +6,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import config
+from bot.services.cashback import available_cashback, consume_cashback, release_cashback, reserve_cashback
 from bot.database.models import CashbackTransaction, Payment, PaymentDelivery, Subscription, User
 from bot.services.payment_policy import (
-    PaymentValidationError, TARIFF_PRICES, assert_order_matches_tariff,
+    PaymentValidationError, CashbackCoversTariff, TARIFF_PRICES, assert_order_matches_tariff, order_is_expired,
 )
 
 
@@ -35,18 +36,27 @@ async def create_payment_intent(
         if existing is not None:
             if existing.user_id != user_id:
                 raise PaymentValidationError("Invalid payment owner")
+            if existing.status != "completed" and order_is_expired(existing.created_at):
+                from bot.services.order_expiry import gateway_is_active
+                if not await gateway_is_active(session, existing.id):
+                    raise PaymentValidationError("Payment expired; open a fresh tariff card")
+            if existing.status == "pending":
+                reserve_cashback(user, existing)
             await session.commit()
             return existing
-        balance = max(0, user.balance or 0)
+        balance = available_cashback(user)
         if method == "cashback" and balance < price:
             raise PaymentValidationError("Insufficient cashback")
         cashback = min(price, balance) if use_cashback else 0
+        if method in {"click", "payme"} and cashback == price:
+            raise CashbackCoversTariff("Activate this tariff using cashback")
         if method == "cashback" and cashback != price:
             raise PaymentValidationError("Cashback must cover the entire tariff")
         payment = Payment(user_id=user_id, amount=price-cashback, tariff_months=months,
                           status="pending", payment_method=method, cashback_applied=cashback,
                           request_key=request_key)
         session.add(payment)
+        reserve_cashback(user, payment)
         await session.commit()
         return payment
     except BaseException:
@@ -83,6 +93,7 @@ async def reject_pending_payment(payment_id: int, session: AsyncSession) -> int 
             await session.rollback()
             return None
         payment.status = "failed"
+        release_cashback(user, payment)
         await session.commit()
         return user.telegram_id
     except BaseException:
@@ -108,11 +119,9 @@ async def process_successful_payment(payment_id: int, session: AsyncSession, bot
                                     tariff_months=payment.tariff_months,
                                     payment_method=payment.payment_method)
         cashback = payment.cashback_applied or 0
-        if (user.balance or 0) < cashback:
-            raise PaymentValidationError("Insufficient cashback; reconcile the pending payment")
+        consume_cashback(user, payment)
         completed_count = await session.scalar(select(func.count()).select_from(Payment).where(
             Payment.user_id == user.telegram_id, Payment.status == "completed")) or 0
-        user.balance = (user.balance or 0) - cashback
         if cashback:
             session.add(CashbackTransaction(user_id=user.telegram_id, amount=cashback, type="spend",
                                            description=f"Payment #{payment.id}"))

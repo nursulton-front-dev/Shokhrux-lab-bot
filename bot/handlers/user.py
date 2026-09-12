@@ -4,8 +4,9 @@ import re
 from html import escape
 import logging
 import os
+from zoneinfo import ZoneInfo
 from aiogram import Router, Bot, F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import (
     Message,
     ChatJoinRequest,
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from bot.database.models import User, Subscription, Payment, Ticket, CashbackTransaction, UserFitnessProfile
-from bot.services.subscription import is_user_subscription_active
+from bot.services.subscription import get_active_subscription, is_user_subscription_active
 from bot.states.registration import RegistrationStates, EditProfileStates
 from bot.states.fitness import FitnessStates
 from bot.states.support import SupportState
@@ -33,12 +34,15 @@ from bot.services.rahmat import create_payment_intent, process_successful_paymen
 from bot.services.click.protocol import build_pay_url as build_click_pay_url
 from bot.services.payment_menu import gateway_buttons, payme_label
 from bot.services.payme.protocol import build_checkout_url as build_payme_checkout_url
-from bot.services.payment_policy import PaymentValidationError
+from bot.services.payment_policy import PaymentValidationError, CashbackCoversTariff, order_is_expired
+from bot.services.cashback import available_cashback
+from bot.services.click_tutorial import tutorial_video
 from bot import texts
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+start_router = Router(name="start")
 
 def get_channel_id() -> int:
     return config.channel_id or int(os.getenv("CHANNEL_ID", "-1001234567890"))
@@ -61,7 +65,7 @@ def main_menu_keyboard(lang: str = "uz", is_active: bool = False, has_bought: bo
     """Builds the user's main reply keyboard per approved scheme.
 
     - Without an active subscription: [Profile] [Subscribe] / [Support]
-    - With an active subscription: [Profile] [AI] / [Invite] [Prolong] / [Support]
+    - With an active subscription: Profile, AI, Training, Invite, Prolong, Support
 
     The language switch lives inside the profile card, not on the main menu.
     """
@@ -75,6 +79,7 @@ def main_menu_keyboard(lang: str = "uz", is_active: bool = False, has_bought: bo
         prolong_btn = KeyboardButton(text=texts.MENU_BUTTONS["prolong"][lang])
         keyboard = [
             [profile_btn, ai_btn],
+            [KeyboardButton(text=texts.MENU_BUTTONS["training"][lang])],
             [ref_btn, prolong_btn],
             [support_btn],
         ]
@@ -87,8 +92,9 @@ def main_menu_keyboard(lang: str = "uz", is_active: bool = False, has_bought: bo
 
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-@router.message(CommandStart())
+@start_router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, session: AsyncSession, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     stmt = select(User).where(User.telegram_id == user_id)
     result = await session.execute(stmt)
@@ -131,7 +137,10 @@ async def cmd_start(message: Message, command: CommandObject, session: AsyncSess
                 user.referred_by = referrer_id
                 await session.commit()
 
-    if not user.language:
+    if await _show_resident_home(message, session, user):
+        return
+
+    if user.language not in ("uz", "ru"):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="set_lang_uz"), InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru")]
         ])
@@ -148,9 +157,41 @@ async def cmd_start(message: Message, command: CommandObject, session: AsyncSess
         texts.WELCOME_TEXT[user.language],
         reply_markup=main_kb
     )
-    await show_tariffs(message, user.language, cashback_balance=user.balance or 0)
+    await show_tariffs(message, user.language, cashback_balance=available_cashback(user))
 
-@router.callback_query(F.data.startswith("set_lang_"))
+async def _show_resident_home(message: Message, session: AsyncSession, user: User) -> bool:
+    subscription = await get_active_subscription(session, user.telegram_id)
+    if subscription is None:
+        return False
+    lang = user.language if user.language in ("uz", "ru") else "uz"
+    expiry = subscription.expires_at.astimezone(ZoneInfo("Asia/Tashkent"))
+    await message.answer(
+        texts.RESIDENT_WELCOME[lang].format(
+            status=texts.STATUS_ACTIVE[lang], expires_at=expiry.strftime("%d.%m.%Y %H:%M")),
+        reply_markup=main_menu_keyboard(lang, is_active=True, has_bought=True),
+        parse_mode="HTML",
+    )
+    return True
+
+
+@router.message(F.text.in_([texts.MENU_BUTTONS["training"]["uz"], texts.MENU_BUTTONS["training"]["ru"]]))
+async def msg_training(message: Message, session: AsyncSession, state: FSMContext):
+    await state.clear()
+    lang = await _payer_language(session, message.from_user.id)
+    subscription = await get_active_subscription(session, message.from_user.id)
+    if subscription is None:
+        await check_registration_and_show_tariffs(message.from_user.id, message, session, state)
+        return
+    # Only expose a persisted, owner-bound link. The delivery worker creates it.
+    if not subscription.invite_link:
+        await message.answer(texts.TRAINING_ACCESS_PENDING[lang])
+        return
+    await message.answer(texts.TRAINING_ACCESS[lang], reply_markup=InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(
+            text=texts.MENU_BUTTONS["training"][lang], url=subscription.invite_link)]]))
+
+
+@router.callback_query(F.data.regexp(r"^set_lang_(uz|ru)$"))
 async def cb_set_lang(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     lang = callback.data.split("_")[2]
     user_id = callback.from_user.id
@@ -159,11 +200,17 @@ async def cb_set_lang(callback: CallbackQuery, session: AsyncSession, state: FSM
     result = await session.execute(stmt)
     user = result.scalar_one_or_none()
     
-    if user:
-        user.language = lang
-        await session.commit()
+    if user is None:
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        return
+    user.language = lang
+    await session.commit()
+    await state.clear()
+    await callback.answer()
         
     await callback.message.delete()
+    if await _show_resident_home(callback.message, session, user):
+        return
     
     if not user.full_name or not user.phone_number:
         await callback.message.answer(texts.REG_ASK_NAME[lang], reply_markup=ReplyKeyboardRemove())
@@ -175,6 +222,7 @@ async def cb_set_lang(callback: CallbackQuery, session: AsyncSession, state: FSM
         texts.WELCOME_TEXT[lang],
         reply_markup=main_kb
     )
+    await show_tariffs(callback.message, lang, cashback_balance=available_cashback(user))
 
 @router.message(F.text.in_([texts.MENU_BUTTONS["support"]["uz"], texts.MENU_BUTTONS["support"]["ru"]]))
 async def msg_support(message: Message, session: AsyncSession, state: FSMContext):
@@ -443,7 +491,6 @@ async def process_profile_photo(message: Message, state: FSMContext, session: As
     user.photo_file_id = photo.file_id
     await session.commit()
     await state.clear()
-    
     await message.answer(texts.PHOTO_UPDATED_SUCCESS[lang])
     main_kb = await get_main_menu_keyboard(session, message.from_user.id, lang)
     await message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
@@ -629,6 +676,7 @@ async def cb_back_to_profile(callback: CallbackQuery, session: AsyncSession, bot
 
 @router.message(F.text.in_([
     texts.MENU_BUTTONS["subscribe"]["uz"], texts.MENU_BUTTONS["subscribe"]["ru"],
+    texts.MENU_BUTTONS["prolong"]["uz"], texts.MENU_BUTTONS["prolong"]["ru"],
     texts.SUB_PROLONG["uz"], texts.SUB_PROLONG["ru"],
     "🚀 Obuna bo'lish", "🚀 Оформить подписку",
     "🚀 Obunani uzaytirish", "🚀 Продлить подписку"
@@ -649,8 +697,8 @@ async def cb_tariffs_back(callback: CallbackQuery, session: AsyncSession):
     """«Orqaga» inside the tariff flow: redraw the tariff card in the same message."""
     user = await session.scalar(select(User).where(User.telegram_id == callback.from_user.id))
     lang = user.language if user and user.language else "uz"
-    balance = (user.balance or 0) if user else 0
-    await _render_screen(callback, _tariff_card_caption(lang), _tariff_card_keyboard(lang, balance))
+    balance = available_cashback(user) if user else 0
+    await _render_screen(callback, _tariff_card_caption(lang), _tariff_card_keyboard(lang, balance), lang=lang)
 
 async def check_registration_and_show_tariffs(user_id: int, message_obj: Message, session: AsyncSession, state: FSMContext):
     stmt = select(User).where(User.telegram_id == user_id)
@@ -662,7 +710,7 @@ async def check_registration_and_show_tariffs(user_id: int, message_obj: Message
         await message_obj.answer(texts.REG_ASK_NAME[lang], reply_markup=ReplyKeyboardRemove())
         await state.set_state(RegistrationStates.waiting_for_name)
     else:
-        await show_tariffs(message_obj, lang, cashback_balance=user.balance or 0)
+        await show_tariffs(message_obj, lang, cashback_balance=available_cashback(user))
 
 @router.message(RegistrationStates.waiting_for_name, F.text)
 async def process_name(message: Message, state: FSMContext, session: AsyncSession):
@@ -718,10 +766,12 @@ async def process_phone(message: Message, state: FSMContext, session: AsyncSessi
     
     await message.answer(texts.REG_SUCCESS[lang], reply_markup=ReplyKeyboardRemove())
     await state.clear()
+    if user and await _show_resident_home(message, session, user):
+        return
     
     main_kb = await get_main_menu_keyboard(session, message.from_user.id, lang)
     await message.answer(texts.WELCOME_TEXT[lang], reply_markup=main_kb)
-    await show_tariffs(message, lang, cashback_balance=user.balance if user else 0)
+    await show_tariffs(message, lang, cashback_balance=available_cashback(user) if user else 0)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -763,14 +813,14 @@ async def _edit_in_place(message: Message | None, text: str,
 
     Photo messages (the tariff card) take the text as caption, plain ones as
     text. Returns False when Telegram refuses the edit (message too old,
-    deleted, or inaccessible) so the caller can fall back to a fresh message.
+    deleted, or inaccessible) so the caller can show a recovery alert.
     An unchanged screen is not an error: Telegram reports it as
     "message is not modified" and the button tap is simply acknowledged.
     """
     if not isinstance(message, Message):
         return False
     try:
-        if message.photo:
+        if message.photo or message.video:
             await message.edit_caption(caption=text, reply_markup=keyboard, parse_mode="HTML")
         else:
             await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
@@ -782,15 +832,13 @@ async def _edit_in_place(message: Message | None, text: str,
     return True
 
 
-async def _render_screen(callback: CallbackQuery, text: str, keyboard: InlineKeyboardMarkup) -> None:
-    """Show the next tariff-flow screen in the tapped message; send a new one
-    only if that message can no longer be edited."""
+async def _render_screen(callback: CallbackQuery, text: str, keyboard: InlineKeyboardMarkup,
+                         *, lang: str = "uz") -> None:
+    """Navigation never sends a replacement message, including failed edits."""
     if not await _edit_in_place(callback.message, text, keyboard):
-        if isinstance(callback.message, Message):
-            await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-        else:
-            await callback.bot.send_message(callback.message.chat.id, text,
-                                            reply_markup=keyboard, parse_mode="HTML")
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
+        return
     await callback.answer()
 
 
@@ -843,8 +891,8 @@ async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
     tariff = TARIFFS[tariff_months]
     tariff_price = tariff['price']
     
-    if user and user.balance and user.balance > 0:
-        cashback_used = min(user.balance, tariff_price)
+    if user and available_cashback(user) > 0:
+        cashback_used = min(available_cashback(user), tariff_price)
         final_price = tariff_price - cashback_used
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -853,11 +901,11 @@ async def cb_tariff_selected(callback: CallbackQuery, session: AsyncSession):
             [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="tariffs_back")]
         ])
         text = texts.CASHBACK_ASK[lang].format(
-            balance=f"{user.balance:,}",
+            balance=f"{available_cashback(user):,}",
             tariff_price=f"{tariff_price:,}",
             final_price=f"{final_price:,}"
         )
-        await _render_screen(callback, text, kb)
+        await _render_screen(callback, text, kb, lang=lang)
     else:
         await render_payment_info(callback, tariff_months, use_cb=0, session=session)
 
@@ -877,7 +925,7 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
     lang = user.language if user and user.language else "uz"
     
     orig_price = tariff['price']
-    cashback_used = min(orig_price, user.balance or 0) if use_cb == 1 else 0
+    cashback_used = min(orig_price, available_cashback(user)) if use_cb == 1 and user else 0
     final_price = orig_price - cashback_used
     
     sub_stmt = select(Subscription).where(
@@ -926,7 +974,7 @@ async def render_payment_info(callback: CallbackQuery, tariff_months: str, use_c
         expires_at=expiry_date_str
     )
     
-    await _render_screen(callback, text, keyboard)
+    await _render_screen(callback, text, keyboard, lang=lang)
 
 @router.callback_query(F.data.regexp(r"^pay_rahmat_(1|3|6)(_[01])?$"))
 async def cb_pay_rahmat(callback: CallbackQuery, session: AsyncSession, bot: Bot):
@@ -967,6 +1015,10 @@ async def _create_gateway_order(callback: CallbackQuery, session: AsyncSession, 
             session, user_id=callback.from_user.id, months=months, method=method,
             use_cashback=bool(use_cb),
             request_key=_payment_request_key(callback, method, months, bool(use_cb)))
+    except CashbackCoversTariff:
+        await callback.answer(texts.PAYMENT_COVERED_BY_CASHBACK_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
+        return None
     except PaymentValidationError:
         await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
         await _mark_checkout_stale(callback, lang)
@@ -1001,12 +1053,12 @@ async def _send_checkout_link(callback: CallbackQuery, *, lang: str, payment: Pa
         # payer sees a price that does not match the tariff card.
         spent = "Keshbek ishlatildi" if lang == "uz" else "Кешбэк применён"
         message += f"\n\n🎁 {spent}: −{payment.cashback_applied:,} UZS"
-    await _render_screen(callback, message, keyboard)
+    await _render_screen(callback, message, keyboard, lang=lang)
 
 
 async def _payer_language(session: AsyncSession, user_id: int) -> str:
     user = await session.scalar(select(User).where(User.telegram_id == user_id))
-    return user.language if user and user.language else "uz"
+    return user.language if user and user.language in ("uz", "ru") else "uz"
 
 
 @router.callback_query(F.data.regexp(r"^pay_click_(1|3|6)_[01]$"))
@@ -1022,11 +1074,89 @@ async def cb_pay_click(callback: CallbackQuery, session: AsyncSession):
                                           use_cb=use_cb, lang=lang)
     if payment is None:
         return
+    await _show_click_checkout(callback, payment, lang)
+
+
+async def _show_click_checkout(callback: CallbackQuery, payment: Payment, lang: str) -> None:
+    if not isinstance(callback.message, Message):
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        return
     url = build_click_pay_url(service_id=config.click_service_id, merchant_id=config.click_merchant_id,
-                              amount=payment.amount, order_id=payment.id)
-    await _send_checkout_link(callback, lang=lang, payment=payment, url=url,
-                              info=texts.CLICK_PAY_INFO, open_btn=texts.CLICK_OPEN_BTN,
-                              months=months, use_cb=use_cb)
+                             amount=payment.amount, order_id=payment.id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=texts.CLICK_CHECKOUT_OPEN[lang], url=url)],
+        [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data=f"click_back_{payment.id}")],
+    ])
+    summary = (f"🧾 #{payment.id} · <b>{payment.amount:,} UZS</b>"
+               + (f" · 🎁 {payment.cashback_applied:,} UZS" if payment.cashback_applied else ""))
+    text = texts.CLICK_CARD_INSTRUCTION[lang] + "\n\n" + summary
+    video = await tutorial_video()
+    if callback.message.video:
+        await _render_screen(callback, text + "\n\n" + texts.CLICK_VIDEO_INSTRUCTION[lang], keyboard, lang=lang)
+        return
+    if video is not None:
+        # Sending a tutorial video is the explicit entry action. Back/reopen then
+        # edit this video's caption and carry the existing order ID, never minting again.
+        await callback.answer()
+        try:
+            await callback.message.answer_video(video=video,
+                caption=text + "\n\n" + texts.CLICK_VIDEO_INSTRUCTION[lang],
+                reply_markup=keyboard, parse_mode="HTML", supports_streaming=True)
+            await _edit_in_place(callback.message, text, InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=texts.CLICK_CHECKOUT_OPEN[lang], url=url)],
+                [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data=f"click_back_{payment.id}")],
+            ]))
+            return
+        except (TelegramBadRequest, TelegramNetworkError, OSError):
+            logger.warning("Click tutorial could not be sent; keeping the payable text screen", exc_info=True)
+            await _edit_in_place(callback.message, text, keyboard)
+            return
+    await _render_screen(callback, text, keyboard, lang=lang)
+
+
+async def _click_order_from_callback(callback: CallbackQuery, session: AsyncSession, lang: str):
+    order_id = int(callback.data.rsplit("_", 1)[1])
+    if not 0 < order_id <= 2**31 - 1:
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
+        return None
+    payment = await session.scalar(select(Payment).where(
+        Payment.id == order_id, Payment.user_id == callback.from_user.id, Payment.payment_method == "click"))
+    from bot.services.order_expiry import gateway_is_active
+    stale = payment is None or payment.status != "pending"
+    if not stale and order_is_expired(payment.created_at):
+        stale = not await gateway_is_active(session, payment.id)
+    await session.commit()  # No read transaction held during Telegram/video upload.
+    if stale:
+        await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+        await _mark_checkout_stale(callback, lang)
+        return None
+    return payment
+
+
+@router.callback_query(F.data.regexp(r"^pay_click_order_[0-9]{1,10}$"))
+async def cb_reopen_click_order(callback: CallbackQuery, session: AsyncSession):
+    lang = await _payer_language(session, callback.from_user.id)
+    if not config.click_enabled:
+        await callback.answer(texts.CLICK_UNAVAILABLE_ALERT[lang], show_alert=True)
+        return
+    payment = await _click_order_from_callback(callback, session, lang)
+    if payment is not None:
+        await _show_click_checkout(callback, payment, lang)
+
+
+@router.callback_query(F.data.regexp(r"^click_back_[0-9]{1,10}$"))
+async def cb_click_back(callback: CallbackQuery, session: AsyncSession):
+    lang = await _payer_language(session, callback.from_user.id)
+    payment = await _click_order_from_callback(callback, session, lang)
+    if payment is None:
+        return
+    text = texts.CLICK_PAY_INFO[lang].format(order_id=payment.id, price=f"{payment.amount:,}")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=texts.CLICK_PAY_BTN[lang], callback_data=f"pay_click_order_{payment.id}")],
+        [InlineKeyboardButton(text=texts.BACK_BTN[lang], callback_data="tariffs_back")],
+    ])
+    await _render_screen(callback, text, keyboard, lang=lang)
 
 
 @router.callback_query(F.data.regexp(r"^pay_payme_(1|3|6)_[01]$"))
@@ -1039,11 +1169,11 @@ async def cb_pay_payme(callback: CallbackQuery, session: AsyncSession):
     _, _, months_raw, use_cb_raw = callback.data.split("_")
     months, use_cb = int(months_raw), int(use_cb_raw)
     lang = await _payer_language(session, callback.from_user.id)
-    if not config.payme_enabled:
-        await callback.answer(texts.PAYME_UNAVAILABLE_ALERT[lang], show_alert=True)
-        return
     if config.payme_checkout_paused:
         await callback.answer(texts.PAYME_SOON_ALERT[lang], show_alert=True)
+        return
+    if not config.payme_enabled:
+        await callback.answer(texts.PAYME_UNAVAILABLE_ALERT[lang], show_alert=True)
         return
     payment = await _create_gateway_order(callback, session, method="payme", months=months,
                                           use_cb=use_cb, lang=lang)
@@ -1069,7 +1199,7 @@ async def cb_pay_manual(callback: CallbackQuery, session: AsyncSession):
     lang = user.language if user and user.language else "uz"
     
     orig_price = tariff['price']
-    cashback_used = min(orig_price, user.balance or 0) if use_cb == 1 else 0
+    cashback_used = min(orig_price, available_cashback(user)) if use_cb == 1 and user else 0
     final_price = orig_price - cashback_used
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1081,8 +1211,7 @@ async def cb_pay_manual(callback: CallbackQuery, session: AsyncSession):
     if cashback_used > 0:
         text += f"\n\n🎁 (Keshbek ishlatildi: {cashback_used:,} UZS)"
         
-    await callback.message.answer(text, reply_markup=keyboard)
-    await callback.answer()
+    await _render_screen(callback, text, keyboard, lang=lang)
 
 @router.callback_query(F.data.regexp(r"^mock_pay_success_(1|3|6)(_[01])?$"))
 async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
@@ -1098,7 +1227,7 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     lang = user.language if user and user.language else "uz"
     
     orig_price = tariff['price']
-    cashback_used = min(orig_price, user.balance or 0) if use_cb == 1 else 0
+    cashback_used = min(orig_price, available_cashback(user)) if use_cb == 1 and user else 0
     final_price = orig_price - cashback_used
     
     try:
@@ -1135,9 +1264,21 @@ async def cb_mock_pay(callback: CallbackQuery, session: AsyncSession, bot: Bot):
             except Exception as e:
                 logger.error(f"Error notifying admin {a_id}: {e}")
 
-    await callback.message.edit_text(texts.PENDING_ADMIN[lang])
+    await _edit_in_place(callback.message, texts.PENDING_ADMIN[lang], None)
     await session.commit()
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith(("pay_click_", "pay_payme_", "pay_cashback_full_",
+                                         "select_pay_", "tariff_", "pay_manual_", "mock_pay_success_", "click_back_")))
+async def cb_legacy_checkout(callback: CallbackQuery, session: AsyncSession):
+    """Catch removed invoice formats after all supported checkout handlers."""
+    lang = await _payer_language(session, callback.from_user.id)
+    if callback.data.startswith("pay_payme_") and config.payme_checkout_paused:
+        await callback.answer(texts.PAYME_SOON_ALERT[lang], show_alert=True)
+        return
+    await callback.answer(texts.PAYMENT_STALE_ALERT[lang], show_alert=True)
+    await _mark_checkout_stale(callback, lang)
 
 
 @router.chat_join_request()

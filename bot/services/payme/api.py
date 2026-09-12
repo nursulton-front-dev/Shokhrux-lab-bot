@@ -16,6 +16,7 @@ from aiohttp import web
 from bot.config import config
 from bot.database.db import AsyncSessionLocal
 from bot.services import http_throttle as throttle
+from bot.services.http_payload import read_body, load_json
 from bot.services.payme import errors, service
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ def _authorize(request: web.Request) -> None:
         raise errors.insufficient_privilege()
     header = request.headers.get("Authorization", "")
     scheme, _, encoded = header.partition(" ")
-    if scheme.lower() != "basic" or not encoded:
+    if len(header) > 1024 or scheme.lower() != "basic" or not encoded:
         raise errors.insufficient_privilege()
     try:
         login, _, key = base64.b64decode(encoded, validate=True).decode("utf-8").partition(":")
@@ -49,7 +50,7 @@ def _authorize(request: web.Request) -> None:
         raise errors.insufficient_privilege() from None
     allowed_logins = {PAYME_LOGIN.lower(), (config.payme_merchant_id or "").lower()}
     login_ok = login.lower() in allowed_logins
-    key_ok = hmac.compare_digest(key, expected_key)
+    key_ok = hmac.compare_digest(key.encode("utf-8"), expected_key.encode("utf-8"))
     # Compare both before deciding, so timing cannot separate the two failures.
     if not (login_ok and key_ok):
         raise errors.insufficient_privilege()
@@ -92,19 +93,18 @@ def _failure(request_id: Any, error: errors.PaymeError) -> web.Response:
 
 
 async def _read_rpc_request(request: web.Request) -> tuple[Any, str, dict[str, Any]]:
-    body = await request.read()
-    if len(body) > MAX_BODY_BYTES:
-        raise errors.invalid_request()
     try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        body = await read_body(request, MAX_BODY_BYTES)
+        payload = load_json(body)
+    except (ValueError, UnicodeError, TimeoutError):
         raise errors.parse_error() from None
     if not isinstance(payload, dict):
         raise errors.invalid_request()
     method = payload.get("method")
     params = payload.get("params")
     request_id = payload.get("id")
-    if not isinstance(method, str):
+    if (not isinstance(method, str) or len(method) > 64
+            or isinstance(request_id, bool) or not isinstance(request_id, (str, int, type(None)))):
         raise errors.invalid_request()
     if params is None:
         params = {}
@@ -145,7 +145,7 @@ async def handle_health(_: web.Request) -> web.Response:
 
 
 def create_app(bot: Bot) -> web.Application:
-    app = web.Application(client_max_size=MAX_BODY_BYTES)
+    app = web.Application(client_max_size=MAX_BODY_BYTES, handler_args={"auto_decompress": False})
     app[BOT_KEY] = bot
     app[RATE_LIMIT_KEY] = {}
     app.router.add_post(PAYME_PATH, handle_payme)

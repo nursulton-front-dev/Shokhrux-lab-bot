@@ -1,6 +1,6 @@
 import datetime
 from typing import List, Optional
-from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float, Index, text
+from sqlalchemy import BigInteger, String, Integer, DateTime, Boolean, ForeignKey, Float, Index, CheckConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -9,6 +9,8 @@ class Base(DeclarativeBase):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (CheckConstraint(
+        "reserved_cashback >= 0 AND reserved_cashback <= balance", name="ck_users_cashback_hold"),)
     
     telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -19,6 +21,7 @@ class User(Base):
     )
     language: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     balance: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reserved_cashback: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     referred_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     photo_file_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     
@@ -69,6 +72,7 @@ class Payment(Base):
     __table_args__ = (
         Index("ix_payments_user_status", "user_id", "status"),
         Index("ix_payments_status_created", "status", "created_at"),
+        CheckConstraint("cashback_reserved >= 0", name="ck_payments_cashback_hold"),
     )
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -78,6 +82,7 @@ class Payment(Base):
     status: Mapped[str] = mapped_column(String)  # "completed", "pending", "failed"
     payment_method: Mapped[str] = mapped_column(String, default="mock_gateway", server_default="mock_gateway")
     cashback_applied: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cashback_reserved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     request_key: Mapped[Optional[str]] = mapped_column(String(160), unique=True, index=True, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -98,6 +103,9 @@ class PaymentDelivery(Base):
     completed_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     next_attempt_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    locked_until: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
 class Ticket(Base):
     __tablename__ = "tickets"

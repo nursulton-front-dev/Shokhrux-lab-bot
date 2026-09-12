@@ -1,141 +1,234 @@
-"""Retryable Telegram effects for committed payments.
+"""Leased outbox delivery. No Telegram I/O holds a DB transaction or User lock.
 
-Delivery is at least once: Telegram offers no idempotency key for sendMessage.
-Financial state is never modified here. Untracked join-request links cannot admit
-anyone because the join handler checks the persisted URL and its owner.
+At-least-once messages: Telegram has no sendMessage idempotency key. Every DB
+write is fenced by a lease token so an expired worker cannot finish a new claim.
 """
 import asyncio
 import datetime
 import logging
+import uuid
+from dataclasses import dataclass
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
-from sqlalchemy import select
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from sqlalchemy import or_, select
 
 from bot.config import config
 from bot.database.db import AsyncSessionLocal
-from bot.database.models import Payment, PaymentDelivery, Subscription, User
+from bot.database.models import PaymentDelivery, Subscription, User
 
 logger = logging.getLogger(__name__)
+UTC = datetime.timezone.utc
+WORK_TIMEOUT = 45
+LEASE_SECONDS = 90
+
+
+def _now():
+    return datetime.datetime.now(UTC)
+
+
+@dataclass(frozen=True)
+class Delivery:
+    payment_id: int
+    token: str
+    subscription_id: int
+    user_id: int
+    lang: str
+    expires_at: datetime.datetime
+    months: int
+    invite_link: str | None
+    vip_invite_link: str | None
+    completed: bool
+    referrer_id: int | None
+    referral_notified: bool
+
+
+def _snapshot(job, sub, user):
+    return Delivery(job.payment_id, job.lease_token, sub.id, sub.user_id,
+                    user.language if user.language in ('uz', 'ru') else 'uz',
+                    sub.expires_at, sub.tariff_months, sub.invite_link, sub.vip_invite_link,
+                    job.completed_at is not None, job.referrer_id, job.referral_notified)
+
+
+async def _claim(payment_id: int) -> Delivery | None:
+    async with AsyncSessionLocal() as session, session.begin():
+        now = _now()
+        job = await session.scalar(select(PaymentDelivery).where(
+            PaymentDelivery.payment_id == payment_id, PaymentDelivery.next_attempt_at <= now,
+            or_(PaymentDelivery.completed_at.is_(None), PaymentDelivery.referral_notified.is_(False)),
+            or_(PaymentDelivery.locked_until.is_(None), PaymentDelivery.locked_until <= now),
+        ).with_for_update(skip_locked=True))
+        if job is None:
+            return None
+        sub = await session.get(Subscription, job.subscription_id)
+        user = await session.get(User, sub.user_id) if sub else None
+        if sub is None or user is None:
+            job.completed_at = now
+            job.referral_notified = True
+            return None
+        if sub.status != 'active' or sub.expires_at <= now:
+            job.completed_at = job.completed_at or now
+        job.lease_token = uuid.uuid4().hex
+        job.locked_until = now + datetime.timedelta(seconds=LEASE_SECONDS)
+        return _snapshot(job, sub, user)
+
+
+async def _owned_job(session, item: Delivery):
+    return await session.scalar(select(PaymentDelivery).where(
+        PaymentDelivery.payment_id == item.payment_id, PaymentDelivery.lease_token == item.token,
+        PaymentDelivery.locked_until > _now(),
+    ).with_for_update())
+
+
+async def _save_link(item: Delivery, column: str, link: str) -> bool:
+    async with AsyncSessionLocal() as session, session.begin():
+        # Serialize the brief entitlement write with scheduler/admin revocation.
+        await session.scalar(select(User).where(User.telegram_id == item.user_id).with_for_update())
+        job = await _owned_job(session, item)
+        sub = await session.get(Subscription, item.subscription_id, populate_existing=True)
+        if job is None or sub is None or sub.status != 'active' or sub.expires_at <= _now():
+            return False
+        if getattr(sub, column) not in (None, link):
+            return False
+        setattr(sub, column, link)
+        return True
+
+
+async def _create_access_link(bot: Bot, **kwargs):
+    try:
+        return await bot.create_chat_invite_link(**kwargs)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.exception('Invite creation failed for chat_id=%s; check administrator can_invite_users',
+                         kwargs.get('chat_id'))
+        raise
+
+
+async def _ensure_links(item: Delivery, bot: Bot) -> None:
+    targets = [(config.channel_id, 'invite_link', item.invite_link)]
+    if item.months == 6:
+        targets.append((config.vip_chat_id, 'vip_invite_link', item.vip_invite_link))
+    for chat_id, column, existing in targets:
+        if not chat_id:
+            raise RuntimeError(f'Chat for {column} is not configured')
+        if existing:
+            continue
+        link = await _create_access_link(bot, chat_id=chat_id, creates_join_request=True,
+            expire_date=item.expires_at, name=f'Payment {item.payment_id}', request_timeout=10)
+        if not await _save_link(item, column, link.invite_link):
+            # A concurrently revoked subscription must never regain a stored link.
+            # Even if revocation fails, an untracked URL fails the join-request guard.
+            try:
+                await bot.revoke_chat_invite_link(chat_id=chat_id, invite_link=link.invite_link, request_timeout=10)
+            except Exception:
+                logger.exception('Could not revoke unused delivery link for payment %s', item.payment_id)
+            raise RuntimeError('Delivery lease or entitlement changed while creating an invite')
+
+
+async def _message_snapshot(item: Delivery) -> Delivery | None:
+    async with AsyncSessionLocal() as session, session.begin():
+        job = await _owned_job(session, item)
+        sub = await session.get(Subscription, item.subscription_id)
+        user = await session.get(User, item.user_id)
+        if job is None:
+            return None
+        if sub is None or user is None or sub.status != 'active' or sub.expires_at <= _now():
+            job.completed_at = _now()
+            return None
+        if not sub.invite_link or (sub.tariff_months == 6 and not sub.vip_invite_link):
+            raise RuntimeError('Delivery links are not ready')
+        return _snapshot(job, sub, user)
+
+
+async def _mark_sent(item: Delivery, *, referral: bool = False) -> None:
+    async with AsyncSessionLocal() as session, session.begin():
+        job = await _owned_job(session, item)
+        if job is not None:
+            if referral:
+                job.referral_notified = True
+            else:
+                job.completed_at = _now()
+
+
+async def _notify_referral(item: Delivery, bot: Bot) -> None:
+    if item.referral_notified:
+        return
+    async with AsyncSessionLocal() as session, session.begin():
+        job = await _owned_job(session, item)
+        if job is None or job.referral_notified:
+            return
+        referrer = await session.get(User, item.referrer_id) if item.referrer_id else None
+        recipient = (referrer.telegram_id, referrer.language if referrer.language in ('uz', 'ru') else 'uz') if referrer else None
+    if recipient:
+        from bot import texts
+        try:
+            await bot.send_message(recipient[0], texts.CASHBACK_NOTIFY_REFERRER[recipient[1]], request_timeout=10)
+        except TelegramForbiddenError:
+            logger.info('Referrer %s cannot receive notifications', recipient[0])
+    await _mark_sent(item, referral=True)
+
+
+async def _release(item: Delivery, error: str | None = None) -> None:
+    async with AsyncSessionLocal() as session, session.begin():
+        # Allow our own expired token to release, but never a replacement token.
+        job = await session.scalar(select(PaymentDelivery).where(
+            PaymentDelivery.payment_id == item.payment_id, PaymentDelivery.lease_token == item.token,
+        ).with_for_update())
+        if job is None:
+            return
+        job.lease_token = None
+        job.locked_until = None
+        job.last_error = error[:500] if error else None
+        if error:
+            job.attempts += 1
+            job.next_attempt_at = _now() + datetime.timedelta(seconds=min(3600, 5 * 2**min(job.attempts-1, 10)))
 
 
 async def deliver_payment(payment_id: int, bot: Bot) -> None:
-    async with AsyncSessionLocal() as session:
-        try:
-            async with asyncio.timeout(45):
-                async with session.begin():
-                    user_id = await session.scalar(select(Payment.user_id).where(Payment.id == payment_id))
-                    if user_id is None:
-                        return
-                    user = await session.scalar(select(User).where(User.telegram_id == user_id).with_for_update())
-                    job = await session.scalar(select(PaymentDelivery).where(PaymentDelivery.payment_id == payment_id)
-                                               .with_for_update(skip_locked=True).execution_options(populate_existing=True))
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    if job is None or job.completed_at is not None or job.next_attempt_at > now:
-                        return
-                    sub = await session.get(Subscription, job.subscription_id)
-                    if user is None or sub is None or sub.status != "active" or sub.expires_at <= now:
-                        job.completed_at = now
-                        return
-                    if not config.channel_id:
-                        raise RuntimeError("CHANNEL_ID is not configured")
-                    if not sub.invite_link:
-                        link = await bot.create_chat_invite_link(
-                            chat_id=config.channel_id, creates_join_request=True,
-                            expire_date=sub.expires_at, name=f"Payment {payment_id}", request_timeout=10)
-                        sub.invite_link = link.invite_link
-                    if sub.tariff_months == 6:
-                        if not config.vip_chat_id:
-                            raise RuntimeError("VIP_CHAT_ID is not configured")
-                        if not sub.vip_invite_link:
-                            link = await bot.create_chat_invite_link(
-                                chat_id=config.vip_chat_id, creates_join_request=True,
-                                expire_date=sub.expires_at, name=f"VIP payment {payment_id}", request_timeout=10)
-                            sub.vip_invite_link = link.invite_link
-                    # Persist links before exposing them: incoming join requests
-                    # must find them even if sendMessage returns an ambiguous timeout.
-                async with session.begin():
-                    await session.scalar(select(User).where(User.telegram_id == user_id).with_for_update())
-                    job = await session.scalar(select(PaymentDelivery).where(PaymentDelivery.payment_id == payment_id)
-                                               .with_for_update(skip_locked=True).execution_options(populate_existing=True))
-                    if job is None or job.completed_at is not None:
-                        return
-                    sub = await session.get(Subscription, job.subscription_id, populate_existing=True)
-                    if sub is None or sub.status != "active" or sub.expires_at <= datetime.datetime.now(datetime.timezone.utc):
-                        job.completed_at = datetime.datetime.now(datetime.timezone.utc)
-                        return
-                    from bot import texts
-                    from bot.handlers.user import get_main_menu_keyboard
-                    lang = user.language if user.language in {"uz", "ru"} else "uz"
-                    template = texts.PAYMENT_SUCCESS_VIP[lang] if sub.vip_invite_link else texts.PAYMENT_SUCCESS[lang]
-                    message = template.format(invite_link=sub.invite_link, vip_link=sub.vip_invite_link,
-                                              expires_at=sub.expires_at.strftime("%Y-%m-%d %H:%M UTC"))
-                    keyboard = await get_main_menu_keyboard(session, user_id, lang)
-                    await bot.send_message(user_id, message, reply_markup=keyboard, request_timeout=10)
-                    job.completed_at = datetime.datetime.now(datetime.timezone.utc)
-            # Referral notification failure must not replay payment delivery.
-            await _notify_referral(payment_id, bot)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Payment delivery failed; queued for retry: payment_id=%s", payment_id)
-            await session.rollback()
-            async with session.begin():
-                job = await session.scalar(select(PaymentDelivery).where(PaymentDelivery.payment_id == payment_id)
-                                           .with_for_update())
-                if job is not None:
-                    job.attempts += 1
-                    job.next_attempt_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-                        seconds=min(3600, 30 * 2 ** min(job.attempts, 7)))
-
-
-async def _notify_referral(payment_id: int, bot: Bot) -> None:
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            job = await session.scalar(select(PaymentDelivery).where(PaymentDelivery.payment_id == payment_id)
-                                       .with_for_update(skip_locked=True).execution_options(populate_existing=True))
-            if job is None or job.referral_notified:
+    item = None
+    try:
+        async with asyncio.timeout(WORK_TIMEOUT):
+            item = await _claim(payment_id)
+            if item is None:
                 return
-            if job.referrer_id is not None:
-                referrer = await session.get(User, job.referrer_id)
-                if referrer is not None:
+            if not item.completed:
+                await _ensure_links(item, bot)
+                current = await _message_snapshot(item)
+                if current is not None:
                     from bot import texts
-                    lang = referrer.language if referrer.language in {"uz", "ru"} else "uz"
-                    try:
-                        await bot.send_message(referrer.telegram_id, texts.CASHBACK_NOTIFY_REFERRER[lang], request_timeout=10)
-                    except TelegramForbiddenError:
-                        logger.info("Referrer %s cannot receive notifications", referrer.telegram_id)
-            job.referral_notified = True
+                    from bot.handlers.user import main_menu_keyboard
+                    template = texts.PAYMENT_SUCCESS_VIP if current.vip_invite_link else texts.PAYMENT_SUCCESS
+                    message = template[current.lang].format(invite_link=current.invite_link,
+                        vip_link=current.vip_invite_link, expires_at=current.expires_at.strftime('%Y-%m-%d %H:%M UTC'))
+                    await bot.send_message(current.user_id, message,
+                        reply_markup=main_menu_keyboard(current.lang, is_active=True, has_bought=True), request_timeout=10)
+                    await _mark_sent(item)
+            await _notify_referral(item, bot)
+        await _release(item)
+    except asyncio.CancelledError:
+        # A killed process is recovered after the persisted lease expires.
+        raise
+    except Exception as exc:
+        logger.exception('Payment delivery failed: payment_id=%s', payment_id)
+        if item is not None:
+            await _release(item, f'{type(exc).__name__}: {exc}')
 
 
 async def deliver_pending_payments(bot: Bot) -> None:
-    now = datetime.datetime.now(datetime.timezone.utc)
     async with AsyncSessionLocal() as session:
+        now = _now()
         ids = list((await session.scalars(select(PaymentDelivery.payment_id).where(
-            PaymentDelivery.completed_at.is_(None), PaymentDelivery.next_attempt_at <= now
-        ).order_by(PaymentDelivery.next_attempt_at, PaymentDelivery.payment_id).limit(50))).all())
-        referral_ids = list((await session.scalars(select(PaymentDelivery.payment_id).where(
-            PaymentDelivery.completed_at.is_not(None), PaymentDelivery.referral_notified.is_(False),
+            or_(PaymentDelivery.completed_at.is_(None), PaymentDelivery.referral_notified.is_(False)),
             PaymentDelivery.next_attempt_at <= now,
-        ).order_by(PaymentDelivery.next_attempt_at, PaymentDelivery.payment_id).limit(50))).all())
-    for payment_id in ids:
-        try:
-            await deliver_payment(payment_id, bot)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Delivery worker failure: payment_id=%s", payment_id)
-    for payment_id in referral_ids:
-        try:
-            async with asyncio.timeout(20):
-                await _notify_referral(payment_id, bot)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Referral notification failed: payment_id=%s", payment_id)
-            async with AsyncSessionLocal() as session, session.begin():
-                job = await session.get(PaymentDelivery, payment_id, with_for_update=True)
-                if job is not None:
-                    job.attempts += 1
-                    job.next_attempt_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-                        seconds=min(3600, 30 * 2 ** min(job.attempts, 7)))
+            or_(PaymentDelivery.locked_until.is_(None), PaymentDelivery.locked_until <= now),
+        ).order_by(PaymentDelivery.next_attempt_at, PaymentDelivery.payment_id)
+          .limit(config.payment_delivery_batch_size))).all())
+    semaphore = asyncio.Semaphore(config.payment_delivery_concurrency)
+
+    async def send(payment_id):
+        async with semaphore:
+            try:
+                await deliver_payment(payment_id, bot)
+            except Exception:
+                logger.exception('Delivery worker failure: payment_id=%s', payment_id)
+
+    await asyncio.gather(*(send(payment_id) for payment_id in ids))

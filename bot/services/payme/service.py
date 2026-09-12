@@ -30,8 +30,9 @@ from bot.services.payme.protocol import (
     to_ms,
     to_tiyin,
 )
-from bot.services.payment_policy import PaymentValidationError, assert_order_matches_tariff
-from bot.services.rahmat import process_successful_payment
+from bot.services.payment_policy import PaymentValidationError, assert_order_matches_tariff, order_is_expired
+from bot.services.rahmat import process_successful_payment, _lock_payment
+from bot.services.cashback import release_cashback, reserve_cashback
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ async def _load_order(session: AsyncSession, order_id: int, *, lock: bool = Fals
 def _assert_payable(payment: Payment, amount_tiyin: int) -> None:
     if payment.status != "pending":
         raise errors.unable_to_perform(f"order {payment.id} is {payment.status}")
+    if order_is_expired(payment.created_at):
+        raise errors.unable_to_perform("Order expired")
     if payment.payment_method != METHOD_PAYME_SANDBOX:
         # Sandbox orders carry no tariff; real ones must still price theirs,
         # or PerformTransaction would fail after Payme has taken the money.
@@ -103,10 +106,14 @@ def _assert_payable(payment: Payment, amount_tiyin: int) -> None:
 
 
 def _is_expired(transaction: PaymeTransaction) -> bool:
-    return now_ms() - transaction.payme_time > TRANSACTION_TIMEOUT_MS
+    return now_ms() - transaction.payme_time >= TRANSACTION_TIMEOUT_MS
 
 
 async def _lock_transaction(session: AsyncSession, payme_id: str) -> PaymeTransaction | None:
+    payment_id = await session.scalar(select(PaymeTransaction.payment_id).where(PaymeTransaction.payme_id == payme_id))
+    if payment_id is None:
+        return None
+    await _lock_payment(session, payment_id)
     return await session.scalar(
         select(PaymeTransaction)
         .where(PaymeTransaction.payme_id == payme_id)
@@ -183,6 +190,8 @@ async def create_transaction(session: AsyncSession, params: dict[str, Any]) -> d
 
     existing = await _lock_transaction(session, payme_id)
     if existing is not None:
+        if existing.payment_id != order_id or existing.amount != amount:
+            raise errors.unable_to_perform("Transaction terms changed")
         if existing.state != STATE_CREATED:
             raise errors.unable_to_perform(f"transaction {payme_id} is in state {existing.state}")
         if _is_expired(existing):
@@ -190,11 +199,22 @@ async def create_transaction(session: AsyncSession, params: dict[str, Any]) -> d
             raise errors.unable_to_perform(f"transaction {payme_id} timed out")
         return _created_result(existing)
 
+    _, user, _ = await _lock_payment(session, order_id)
+    concurrent_order = await session.scalar(select(PaymeTransaction.payment_id).where(
+        PaymeTransaction.payme_id == payme_id))
+    if concurrent_order is not None:
+        if concurrent_order != order_id:
+            raise errors.unable_to_perform("Transaction belongs to another order")
+        return await create_transaction(session, params)
     payment = await _load_order(session, order_id)
     _assert_payable(payment, amount)
     # Read the id now: a rollback expires the ORM object, and touching it
     # afterwards would attempt IO outside the async context.
     paid_order_id = payment.id
+    try:
+        reserve_cashback(user, payment)
+    except PaymentValidationError:
+        raise errors.unable_to_perform("Insufficient available cashback") from None
     transaction = PaymeTransaction(
         payme_id=payme_id, payment_id=paid_order_id, amount=amount,
         state=STATE_CREATED, payme_time=payme_time, created_at=_utcnow(),
@@ -220,6 +240,8 @@ async def _cancel_created(
     transaction.cancelled_at = _utcnow()
     payment = await _load_order(session, transaction.payment_id, lock=True)
     if payment.status == "pending":
+        _, user, _ = await _lock_payment(session, payment.id)
+        release_cashback(user, payment)
         payment.status = "failed"
     await session.commit()
 

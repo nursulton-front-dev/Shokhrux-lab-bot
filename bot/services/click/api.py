@@ -16,6 +16,7 @@ from aiohttp import web
 from bot.config import config
 from bot.database.db import AsyncSessionLocal
 from bot.services import http_throttle as throttle
+from bot.services.http_payload import read_body, load_json, MAX_FIELDS
 from bot.services.click import errors, protocol, service
 
 logger = logging.getLogger(__name__)
@@ -33,31 +34,34 @@ RATE_LIMIT_KEY: web.AppKey[throttle.Buckets] = web.AppKey("click_rate_limit", di
 
 async def _read_fields(request: web.Request) -> dict[str, str]:
     """Return the callback fields as raw strings, exactly as Click sent them."""
-    body = await request.read()
-    if len(body) > MAX_BODY_BYTES:
-        raise errors.ClickError(errors.BAD_REQUEST, "body larger than the protocol allows")
-    content_type = (request.headers.get("Content-Type") or "").partition(";")[0].strip().lower()
-    if content_type == "application/json":
-        try:
-            payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            raise errors.ClickError(errors.BAD_REQUEST, "malformed JSON body") from None
-        if not isinstance(payload, dict):
-            raise errors.ClickError(errors.BAD_REQUEST, "JSON body must be an object")
-        return {str(key): "" if value is None else str(value) for key, value in payload.items()}
     try:
-        fields = dict(parse_qsl(body.decode("utf-8"), keep_blank_values=True))
-    except UnicodeDecodeError:
-        raise errors.ClickError(errors.BAD_REQUEST, "body is not UTF-8") from None
-    for key, value in request.query.items():
-        fields.setdefault(key, value)
-    return fields
+        body = await read_body(request, MAX_BODY_BYTES)
+        content_type = (request.headers.get("Content-Type") or "").partition(";")[0].strip().lower()
+        if content_type == "application/json":
+            payload = load_json(body)
+            if not isinstance(payload, dict) or any(isinstance(value, (dict, list, bool)) for value in payload.values()):
+                raise ValueError("Expected scalar fields")
+            fields = {key: "" if value is None else str(value) for key, value in payload.items()}
+        else:
+            pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True, max_num_fields=MAX_FIELDS, errors="strict")
+            fields = dict(pairs)
+            if len(pairs) != len(fields):
+                raise ValueError("Duplicate form fields")
+        # Signed callback fields belong in the body; mixing query/body is ambiguous.
+        if request.query_string:
+            raise ValueError("Query parameters are not accepted")
+        if any(len(key) > 64 or len(value) > protocol.MAX_FIELD_LENGTH for key, value in fields.items()):
+            raise ValueError("Field too long")
+        return fields
+    except (ValueError, UnicodeError, TimeoutError):
+        raise errors.ClickError(errors.BAD_REQUEST, "Invalid or oversized callback body") from None
 
 
 def _echo(value: str) -> Any:
     """Click sends numeric ids; echo them as numbers when they parse as such."""
-    trimmed = value.strip()
-    return int(trimmed) if trimmed.lstrip("-").isdigit() else trimmed
+    trimmed = value.strip()[:protocol.MAX_FIELD_LENGTH]
+    digits = trimmed.removeprefix("-")
+    return int(trimmed) if digits.isascii() and digits.isdigit() and len(digits) <= 19 else trimmed
 
 
 def _response(fields: dict[str, str], action: int, code: int, note: str,

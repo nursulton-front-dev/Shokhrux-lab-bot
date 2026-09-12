@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from bot import texts
@@ -15,6 +15,7 @@ from bot.config import config
 from bot.database.db import AsyncSessionLocal
 from bot.database.models import Payment, Subscription, User
 from bot.services.payment_menu import gateway_buttons
+from bot.services.cashback import available_cashback
 from bot.services.telegram_rate_limit import kick_member, revoke_invite
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ async def _remind_subscription(bot: Bot, subscription_id: int, days: int) -> Non
             message = (texts.REMIND_1D if days == 1 else texts.REMIND_3D)[language].format(
                 expiry=sub.expires_at.astimezone(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
             )
-            keyboard = _renewal_keyboard(sub.tariff_months, language, user.balance or 0)
+            keyboard = _renewal_keyboard(sub.tariff_months, language, available_cashback(user))
             try:
                 await bot.send_message(chat_id=user_id, text=message,
                                        reply_markup=keyboard, request_timeout=15)
@@ -157,15 +158,34 @@ async def _remind_subscription(bot: Bot, subscription_id: int, days: int) -> Non
 
 
 async def _fail_stale_payments(now: datetime.datetime) -> None:
-    # Pending payments never grant access. An abandoned renewal must not remove
-    # an independently paid subscription. CAS also preserves concurrent approval.
-    async with AsyncSessionLocal() as session, session.begin():
-        await session.execute(
-            update(Payment).where(
-                Payment.status == "pending",
-                Payment.created_at <= now - datetime.timedelta(hours=24),
-            ).values(status="failed")
-        )
+    from bot.database.models import ClickTransaction, PaymeTransaction
+    from bot.services.click.protocol import PREPARE_TIMEOUT
+    from bot.services.payme.protocol import TRANSACTION_TIMEOUT_MS
+    from bot.services.payment_policy import ORDER_TTL
+    from bot.services.order_expiry import expire_pending_order
+
+    last_id = 0
+    while True:
+        async with AsyncSessionLocal() as session:
+            ids = list((await session.scalars(select(Payment.id).where(
+                Payment.id > last_id, Payment.status == "pending", or_(
+                    Payment.created_at <= now - ORDER_TTL,
+                    select(ClickTransaction.id).where(
+                        ClickTransaction.payment_id == Payment.id, ClickTransaction.state == 1,
+                        ClickTransaction.created_at <= now - PREPARE_TIMEOUT).exists(),
+                    select(PaymeTransaction.id).where(
+                        PaymeTransaction.payment_id == Payment.id, PaymeTransaction.state == 1,
+                        PaymeTransaction.payme_time <= int(now.timestamp()*1000)-TRANSACTION_TIMEOUT_MS).exists(),
+                )).order_by(Payment.id).limit(PAGE_SIZE))).all())
+        if not ids:
+            return
+        for payment_id in ids:
+            try:
+                async with AsyncSessionLocal() as session, session.begin():
+                    await expire_pending_order(session, payment_id, now)
+            except Exception:
+                logger.exception("Could not expire payment %s", payment_id)
+        last_id = ids[-1]
 
 
 async def run_cron_jobs(bot: Bot) -> None:
@@ -213,7 +233,7 @@ async def start_scheduler(bot: Bot, interval_seconds: int = 60) -> None:
         await asyncio.sleep(interval_seconds)
 
 
-async def start_payment_delivery(bot: Bot, interval_seconds: int = 60) -> None:
+async def start_payment_delivery(bot: Bot, interval_seconds: int = 3) -> None:
     from bot.services.payment_delivery import deliver_pending_payments
 
     while True:

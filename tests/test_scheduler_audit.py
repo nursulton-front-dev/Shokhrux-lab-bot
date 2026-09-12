@@ -118,20 +118,6 @@ async def test_admin_pending_revocation_retries_even_before_expiry(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_stale_payment_expiry_only_cas_updates_payment(monkeypatch):
-    session = FakeSession()
-    monkeypatch.setattr(scheduler, "AsyncSessionLocal", lambda: session)
-    await scheduler._fail_stale_payments(datetime.datetime.now(datetime.timezone.utc))
-    statement = session.execute.await_args.args[0]
-    compiled = statement.compile(dialect=postgresql.dialect())
-    assert str(compiled).startswith("UPDATE payments SET status=")
-    assert "payments.status =" in str(compiled)
-    assert "subscriptions" not in str(compiled)
-    assert "pending" in compiled.params.values()
-    assert "failed" in compiled.params.values()
-
-
-@pytest.mark.asyncio
 async def test_one_user_failure_does_not_stop_batch(monkeypatch):
     async def ids(*conditions):
         yield 1

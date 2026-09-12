@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     click_service_id: Optional[int] = None
     click_merchant_id: Optional[int] = None
     click_secret_key: Optional[str] = None
+    click_tutorial_video_path: Optional[str] = "assets/click_instruction.mp4"
+    click_tutorial_video_id: Optional[str] = None
+    payment_delivery_concurrency: int = Field(default=4, ge=1, le=20)
+    payment_delivery_batch_size: int = Field(default=50, ge=1, le=200)
+    # Exact direct proxy addresses/CIDRs; never trust forwarding headers by default.
+    trusted_proxy_ips: str = ""
+
+    @field_validator("trusted_proxy_ips")
+    @classmethod
+    def _validate_trusted_proxies(cls, value: str) -> str:
+        from ipaddress import ip_network
+        for entry in value.split(","):
+            if entry.strip():
+                network = ip_network(entry.strip(), strict=False)
+                if network.prefixlen == 0:
+                    raise ValueError("Do not trust all internet addresses as proxies")
+        return value
 
     @property
     def click_enabled(self) -> bool:
@@ -84,6 +101,7 @@ class Settings(BaseSettings):
         "admin_id", "support_id", "channel_id", "vip_chat_id",
         "payme_merchant_id", "payme_test_key", "payme_prod_key",
         "click_service_id", "click_merchant_id", "click_secret_key",
+        "click_tutorial_video_path", "click_tutorial_video_id",
         mode="before",
     )
     @classmethod

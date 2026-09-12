@@ -78,9 +78,9 @@ python run_migration.py
 - Run one polling process per bot token. FSM isolation, the outbound Telegram limiter and in-memory broadcasts are per process. Payment serialization/idempotency and delivery jobs live in PostgreSQL.
 - Both channels require `can_invite_users` and membership-management rights. New links use join requests: only the paid Telegram user whose stored URL matches is approved. Unknown/forwarded URLs are declined.
 - `rotate_invites.py` contacts Telegram, revokes historical stored links (including expired subscriptions), and sends replacements to active subscribers. Run it once during upgrade; retry if it exits nonzero. Untracked links created by the old manual admin handler cannot be found through Bot API listing: revoke those in Telegram's invite management UI.
-- Money is committed together with a durable delivery job. The worker checks every 60 seconds; Telegram errors retry with backoff up to one hour. Inspect `Payment delivery failed` logs and `payment_deliveries` where `completed_at IS NULL` and `attempts > 0`.
+- Money is committed together with a durable delivery job. The worker checks every 3 seconds; Telegram errors retry with backoff up to one hour. Inspect `Payment delivery failed` logs and `payment_deliveries` where `completed_at IS NULL` and `attempts > 0`.
 - Message delivery is at least once: a network timeout after Telegram accepts a message may produce a duplicate notification. Payment status, balance, subscription and referral accrual are protected independently.
-- Cashback is checked again at confirmation. It is not reserved while a manual payment is pending. If another purchase used that cashback, confirmation fails without extending access: an administrator must reconcile the received cash and cashback terms before retrying or refunding.
+- Cashback is reserved under a user row lock when an order is created. Confirmation consumes its hold; cancellation or expiry releases it. Other pending orders can use only the available balance.
 - Rahmat Pay is disabled: the previous URL builder was a stub. Enabling online payments requires the provider's documented invoice API and authenticated confirmation/reconciliation. Manual card approval and full cashback payments remain available.
 - Default DB connection budget is 5 per process (`DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=0`), recycle 600 s, pool wait 10 s, connect timeout 15 s, command timeout 30 s. Budget all processes and maintenance connections against the actual Neon compute/pooler quota; these values do not prove an account-specific capacity limit.
 - `pool_pre_ping` replaces stale idle connections but cannot replay a transaction interrupted by a disconnect. Repeat the same payment action after checking its persisted status; do not blindly retry every handler's external effects.
@@ -135,3 +135,84 @@ python self_test.py
 python audit/benchmark_event_loop.py
 ```
 Tests ignore `.env`; PostgreSQL tests create and delete only their own temporary local cluster via `pgembed`. Neither production Neon nor real Telegram/Gemini are contacted by tests. `self_test.py` is the original import/wiring smoke suite and does not prove financial concurrency on its own.
+
+## Audit fixes and Click video (2026-09-12)
+
+Before starting this version, stop **all writers** (polling, payment HTTP endpoint,
+scheduler and delivery workers) and run `python run_migration.py`. In Docker:
+
+```sh
+docker compose build bot
+docker compose stop bot
+docker compose run --rm bot python run_migration.py
+docker compose up -d bot
+```
+
+Build the new image **before** running its migration (`docker compose build bot`);
+the migration must come from the same version as the application. Never run an old
+image after the migration: it does not respect cashback holds. For rollback, stop
+writers and reconcile pending orders before choosing a compatible version.
+
+The migration adds `users.reserved_cashback`, `payments.cashback_reserved` and
+outbox lease fields (`lease_token`, `locked_until`, `last_error`). It backfills
+pending-order holds atomically and is repeatable. If old pending orders promise
+more cashback than their owner's balance, it stops with the affected user ID.
+Reconcile those orders with the gateway before retrying; it never silently changes
+an already-issued invoice's amount or cancels a possibly paid order.
+
+Place the instructional video at `assets/click_instruction.mp4`, or configure
+`CLICK_TUTORIAL_VIDEO_PATH`. Relative paths resolve from the project root. The
+video must be nonempty and smaller than 50 MiB. Alternatively set
+`CLICK_TUTORIAL_VIDEO_ID` to a video file_id issued to **this bot**; it takes priority.
+The missing/invalid asset fallback retains the text instructions and payment URL.
+
+Docker mounts `/app/assets` as a named volume. Rebuilding does not overwrite an
+existing volume; copy the video into it after the container is created:
+
+```sh
+docker compose cp assets/click_instruction.mp4 bot:/app/assets/click_instruction.mp4
+```
+
+Checkout sends one video on entry. Its Back/Reopen buttons carry the original
+payment ID so navigation does not create another invoice or cashback hold.
+
+Replace the public Nginx payment locations with `deploy/nginx/merchant-proxy.conf`
+(included inside the existing TLS `server` block), validate with `nginx -t`, then
+reload. The fragment overwrites both IP headers and retains protocol errors for
+oversized requests/upstream failures. Do not enable `real_ip_header` based on
+untrusted internet input on this public server.
+
+Set `TRUSTED_PROXY_IPS` to the **actual direct proxy peer** seen by aiohttp. Host
+networking commonly uses `127.0.0.1,::1`; Docker port publishing commonly uses the
+host bridge gateway, whose exact address must be checked for this deployment.
+Leave it empty to ignore all forwarding headers. Do not use `0.0.0.0/0`, `::/0`
+or trust all private networks. The API port must not be publicly accessible.
+
+`PAYMENT_DELIVERY_CONCURRENCY=4` and `PAYMENT_DELIVERY_BATCH_SIZE=50` control batch
+sending. Tasks have a 90-second lease, a 45-second operation timeout, and retries
+from 5 seconds up to one hour. A crashed worker's lease expires automatically;
+`last_error` and `attempts` identify delivery failures. Sending is at least once:
+a Telegram timeout after successful delivery can still cause a duplicate message,
+but the payment and subscription are committed once.
+
+### Final banners and authorized prelaunch cleanup
+
+The release includes `assets/Tarifs_uz.jpg`, `assets/Tarifs_ru.jpg` and
+`assets/click_instruction.mp4`. Both complete tariff captions fit Telegram's
+1024-character limit. Copy **all three** files into the existing asset volume;
+rebuilding alone retains old banners:
+
+```sh
+docker compose cp assets/Tarifs_uz.jpg bot:/app/assets/Tarifs_uz.jpg
+docker compose cp assets/Tarifs_ru.jpg bot:/app/assets/Tarifs_ru.jpg
+docker compose cp assets/click_instruction.mp4 bot:/app/assets/click_instruction.mp4
+```
+
+A production wipe requires explicit operator authorization. Stop all writers,
+save and validate a full PostgreSQL custom-format backup, then truncate all
+application tables in one transaction. Preserve sequences (`CONTINUE IDENTITY`)
+so old payment URLs cannot resolve to newly created orders. Include gateway
+transactions, delivery jobs, support tickets and fitness history alongside users,
+subscriptions, payments and cashback. Verify zero rows before starting workers.
+Run the release migration after cleanup and before restarting the bot.
+Database cleanup does not delete historical Telegram messages/keyboards.

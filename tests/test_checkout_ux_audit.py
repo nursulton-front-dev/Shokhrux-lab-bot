@@ -35,6 +35,7 @@ def make_message(*, photo: bool) -> MagicMock:
     message = MagicMock(spec=Message)
     message.message_id = 4242
     message.chat = MagicMock(id=USER_ID)
+    message.video = None
     message.photo = [MagicMock()] if photo else None
     for name in ("answer", "answer_photo", "edit_text", "edit_caption",
                  "edit_reply_markup", "delete"):
@@ -52,7 +53,7 @@ def make_callback(data: str, message: MagicMock) -> AsyncMock:
 
 def session_with_user(lang: str, balance: int = 0) -> AsyncMock:
     session = AsyncMock()
-    session.scalar = AsyncMock(return_value=MagicMock(language=lang, balance=balance, telegram_id=USER_ID))
+    session.scalar = AsyncMock(return_value=MagicMock(language=lang, balance=balance, reserved_cashback=0, telegram_id=USER_ID))
     return session
 
 
@@ -100,7 +101,7 @@ async def test_unpaused_payme_proceeds_to_mint_the_order(merchants, monkeypatch)
 async def test_payment_screen_marks_payme_as_coming_soon(merchants, monkeypatch):
     monkeypatch.setattr(config, "payme_checkout_paused", True)
     session = AsyncMock()
-    user = MagicMock(language="uz", balance=0)
+    user = MagicMock(language="uz", balance=0, reserved_cashback=0)
     session.scalar = AsyncMock(side_effect=[user, None])  # user lookup, then active subscription
     callback = make_callback("select_pay_1_0", make_message(photo=True))
 
@@ -157,22 +158,23 @@ async def test_back_swallows_message_is_not_modified(merchants):
 
 
 @pytest.mark.asyncio
-async def test_back_falls_back_to_a_new_message_when_the_old_one_cannot_be_edited(merchants):
+async def test_failed_edit_shows_recovery_without_sending_a_message(merchants):
     message = make_message(photo=True)
     message.edit_caption.side_effect = bad_request("Bad Request: message can't be edited")
     callback = make_callback("tariffs_back", message)
 
     await handlers.cb_tariffs_back(callback, session_with_user("uz"))
 
-    message.answer.assert_awaited_once()
-    callback.answer.assert_awaited_once_with()
+    message.answer.assert_not_awaited()
+    callback.answer.assert_awaited_once_with(texts.PAYMENT_STALE_ALERT["uz"], show_alert=True)
+    message.edit_reply_markup.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_every_back_button_in_the_flow_edits_in_place(merchants, monkeypatch):
     """Tariff detail and cashback question point «Orqaga» at the in-place handler."""
     session = AsyncMock()
-    user = MagicMock(language="uz", balance=0)
+    user = MagicMock(language="uz", balance=0, reserved_cashback=0)
     session.scalar = AsyncMock(side_effect=[user, None])
     callback = make_callback("select_pay_1_0", make_message(photo=True))
     await handlers.render_payment_info(callback, "1", 0, session)
@@ -280,3 +282,24 @@ async def test_cashback_activation_failure_is_localized_and_retires_buttons(merc
 
     callback.answer.assert_awaited_once_with(texts.CASHBACK_INSUFFICIENT_OR_STALE_ALERT["uz"], show_alert=True)
     message.edit_reply_markup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('message', [None, MagicMock()])
+async def test_navigation_without_accessible_message_only_alerts(message):
+    callback = make_callback('tariffs_back', message)
+    await handlers.cb_tariffs_back(callback, session_with_user('ru'))
+    callback.answer.assert_awaited_once_with(texts.PAYMENT_STALE_ALERT['ru'], show_alert=True)
+    callback.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('data', ['pay_click_999', 'pay_click_invoice_42', 'select_pay_12_0'])
+async def test_legacy_callback_retires_keyboard_without_creating_payment(monkeypatch, data):
+    intent = AsyncMock()
+    monkeypatch.setattr(handlers, 'create_payment_intent', intent)
+    callback = make_callback(data, make_message(photo=True))
+    await handlers.cb_legacy_checkout(callback, session_with_user('uz'))
+    callback.answer.assert_awaited_once_with(texts.PAYMENT_STALE_ALERT['uz'], show_alert=True)
+    callback.message.edit_reply_markup.assert_awaited_once()
+    intent.assert_not_awaited()

@@ -1,28 +1,51 @@
+RESIDENT_WELCOME = {
+    "uz": "✅ <b>Siz allaqachon klub a'zosisiz!</b>\n\n📊 Status: <b>{status}</b>\n📅 Obuna tugashi: <b>{expires_at}</b> (Toshkent)\n\nKerakli bo'limni tanlang 👇",
+    "ru": "✅ <b>Вы уже участник клуба!</b>\n\n📊 Статус: <b>{status}</b>\n📅 Подписка до: <b>{expires_at}</b> (Ташкент)\n\nВыберите раздел 👇",
+}
+TRAINING_ACCESS = {
+    "uz": "🏋️ Mashg'ulotlar yopiq klub kanalida. Shaxsiy havolangiz orqali kiring:",
+    "ru": "🏋️ Тренировки находятся в закрытом канале клуба. Войдите по своей ссылке:",
+}
+TRAINING_ACCESS_PENDING = {
+    "uz": "⏳ Kirish havolasi tayyorlanmoqda. Bot uni avtomatik yuboradi. Havola kelmasa, yordam xizmatiga yozing.",
+    "ru": "⏳ Ссылка доступа готовится. Бот отправит её автоматически. Если ссылка не приходит, напишите в поддержку.",
+}
+
 WELCOME_TEXT = {
-    "uz": (
-        "🌟 <b>Ideal qomat va sog'lom hayot sari xush kelibsiz!</b>\n\n"
-        "Siz shunchaki oddiy botga emas, balki aniq natijalarga erishishingizga yordam beruvchi yopiq fitnes-klubga taklifnoma oldingiz!\n\n"
-        "Bu yerda internetdagi quruq va samarasiz maslahatlar emas, balki professional va ishlaydigan tizim sizni kutmoqda:\n\n"
-        "🏋️‍♂️ <b>Yopiq klubimizda sizni nimalar kutmoqda?</b>\n\n"
-        "• Ozish va mushak massasini oshirish uchun samarali mashg'ulot dasturlari\n\n"
-        "• Ortiqcha vazndan xalos bo me'yoriy taomnoma (PP-retseptlar)\n\n"
-        "• Sun'iy intellekt (AI) yordamida foto orqali kaloriyalarni hisoblash hamda shaxsiy nutritsiolog maslahati\n\n"
-        "• Sizni to'xtab qolishga yo'l qo'ymaydigan kuchli motivatsiya va hamjamiyat\n\n"
-        "🔥 Ortiqcha vazndan xalos bo'lib, o'zingizning eng yaxshi versiyangizni kashf etish vaqti keldi!\n\n"
-        "O'zingizga mos tarifni tanlang va hoziroq safimizga qo'shiling 👇"
+    'uz': (
+        '👋 Assalomu alaykum!\n'
+        '\n'
+        'Yopiq Telegram kanalimizga xush kelibsiz 💪\n'
+        '\n'
+        'Bu yerda natijaga erishish uchun hamma narsa bir joyda:\n'
+        '\n'
+        '🏋️ Mashg‘ulotlar\n'
+        '🥗 Ovqatlanish va dieta\n'
+        '😴 Uyqu va rejim\n'
+        '💪 Massa olish va ozish\n'
+        '💊 Farmakologiya\n'
+        '🤖 BJU va ovqatlanish uchun AI\n'
+        '📞 Guruhli qo‘ng‘iroqlar va uchrashuvlar\n'
+        '\n'
+        'Tarifni tanlang va natija sari harakatni boshlang 🔥'
     ),
-    "ru": (
-        "🌟 <b>Добро пожаловать на путь к идеальной фигуре и здоровой жизни!</b>\n\n"
-        "Вы получили приглашение в закрытый фитнес-клуб, который поможет вам достичь реальных результатов!\n\n"
-        "Здесь вы получите не сухие советы из интернета, а четкую и проверенную на практике систему:\n\n"
-        "🏋️‍♂️ <b>Что вас ждет в нашем закрытом клубе?</b>\n\n"
-        "• Эффективные программы тренировок для похудения и набора мышечной массы\n\n"
-        "• Персональное и вкусное меню (ПП-рецепты) для сжигания жира\n\n"
-        "• ИИ-инструменты: подсчет калорий по фото и персональный карманный нутрициолог\n\n"
-        "• Сильная мотивация и окружение единомышленников\n\n"
-        "🔥 Пришло время избавиться от лишнего веса и создать лучшую версию себя!\n\n"
-        "Выберите подходящий тариф и присоединяйтесь к нам прямо сейчас 👇"
-    )
+    'ru': (
+        '👋 Ассаламу алейкум!\n'
+        '\n'
+        'Добро пожаловать в закрытый Telegram-канал 💪\n'
+        '\n'
+        'Здесь всё для твоего результата в одном месте:\n'
+        '\n'
+        '🏋️ Тренировки\n'
+        '🥗 Питание и диета\n'
+        '😴 Сон и режим\n'
+        '💪 Набор массы и похудение\n'
+        '💊 Фармакология\n'
+        '🤖 ИИ для расчёта БЖУ и питания\n'
+        '📞 Созвоны и встречи с участниками\n'
+        '\n'
+        'Выбирай тариф и начинай работать над результатом 🔥'
+    ),
 }
 
 PROFILE_TEXT = {
@@ -72,15 +95,15 @@ VIP_GROUP_BTN = {"uz": "👑 VIP Guruhga kirish", "ru": "👑 Войти в VIP-
 VIP_GROUP_CARD = {
     "uz": (
         "👑 <b>VIP Guruh (6 oylik tarif)</b>\n\n"
-        "Ushbu yopiq guruhda Shohrux bilan offlayn VIP kechki ovqatlar va Mastermind uchrashuvlari "
-        "(har 2 oyda maxsus restoran/lokatsiyada) anonslari e'lon qilinadi.\n\n"
+        "Ushbu yopiq guruhda VIP ishtirokchilari bilan guruhli kechki ovqatlar "
+        "(har oy 1 marta) anonslari e'lon qilinadi.\n\n"
         "🔑 <b>Shaxsiy bir martalik havolangiz:</b>\n{vip_link}\n\n"
         "⚠️ Bu havola faqat siz uchun. Uni boshqalarga bermang!"
     ),
     "ru": (
         "👑 <b>VIP-группа (тариф 6 месяцев)</b>\n\n"
-        "В этой закрытой группе публикуются анонсы офлайн VIP-ужинов и мастермайндов с Шохрухом "
-        "(раз в 2 месяца в особом ресторане/локации).\n\n"
+        "В этой закрытой группе публикуются анонсы групповых ужинов с участниками VIP "
+        "(1 раз в месяц).\n\n"
         "🔑 <b>Ваша персональная одноразовая ссылка:</b>\n{vip_link}\n\n"
         "⚠️ Ссылка только для вас. Не передавайте её другим!"
     )
@@ -125,111 +148,115 @@ STATUS_ACTIVE = {"uz": "FAOL", "ru": "АКТИВЕН"}
 STATUS_EXPIRED = {"uz": "FAOL EMAS", "ru": "НЕАКТИВЕН"}
 
 TARIFF_CARDS = {
-    "1": {
-        "uz": (
-            "🥉 <b>1 OYLIK TARIF — Boshlang'ich start</b>\n\n"
-            "💰 <b>Narxi: 500 000 UZS</b>\n\n"
-            "📋 <b>Paket tarkibi:</b>\n"
-            "• 30 kun davomida yopiq fitnes-kanalga to'liq kirish.\n"
-            "• Ozish uchun tayyor mashg'ulot dasturlari va PP-retseptlar bazasi.\n"
-            "• Umumiy guruhda kunlik nazorat va motivatsiya."
+    '1': {
+        'uz': (
+            "🥉 BAZAVIY — 500 000 so'm / 1 oy\n"
+            "• Har oy 10 ta yangi mashg'ulot darsi\n"
+            "• Guruhli qo'ng'iroq haftasiga 1 marta\n"
+            '• Guruhli uchrashuv oyiga 1 marta\n'
+            '• Ratsionni AI orqali hisoblash (foto orqali BJU)\n'
+            "• AI yordamchi (mahsulot xaridi va ovqatlanish bo'yicha)"
         ),
-        "ru": (
-            "🥉 <b>Тариф 1 месяц — Базовый старт</b>\n\n"
-            "💰 <b>Цена: 500 000 UZS</b>\n\n"
-            "📋 <b>Наполнение:</b>\n"
-            "• Доступ к закрытому фитнес-каналу на 30 дней.\n"
-            "• Готовые программы тренировок и база ПП-рецептов.\n"
-            "• Ежедневные отчёты и мотивация в общем чате."
-        )
+        'ru': (
+            '🥉 БАЗОВЫЙ — 500 000 сум / месяц\n'
+            '• 10 новых тренировочных уроков каждый месяц\n'
+            '• Групповой созвон 1 раз в неделю\n'
+            '• Групповая встреча 1 раз в месяц\n'
+            '• ИИ-расчёт БЖУ по фото еды\n'
+            '• ИИ-помощник по закупу продуктов и питанию'
+        ),
     },
-    "3": {
-        "uz": (
-            "🥈 <b>3 OYLIK TARIF — Optimal natija</b>\n\n"
-            "💰 <b>Narxi: 1 200 000 UZS</b> <i>(Foyda 300 000 UZS)</i>\n\n"
-            "📋 <b>Paket tarkibi:</b>\n"
-            "• 1 oylik tarifdagi barcha imkoniyatlar.\n"
-            "• Vazn dinamikasiga moslashtirilgan shaxsiy taomnoma.\n"
-            "• AI-nutritsiolog va foto-kaloriya vositalariga to'liq kirish.\n"
-            "• Mashqlar texnikasi tahlili bo'yicha yopiq jonli efirlar."
+    '3': {
+        'uz': (
+            "🥈 FITNES (ENG OMMABOP) — 1 200 000 so'm / 3 oy\n"
+            "(Asl narxi: 1 500 000 so'm — 300 000 so'm tejang!)\n"
+            '• Barcha «Bazaviy» imkoniyatlar 3 oy davomida\n'
+            "• Har oy 10 ta yangi mashg'ulot darsi\n"
+            "• Guruhli qo'ng'iroq haftasiga 1 marta\n"
+            '• Guruhli uchrashuv oyiga 1 marta\n'
+            '• Ratsionni AI orqali hisoblash va AI yordamchi'
         ),
-        "ru": (
-            "🥈 <b>Тариф 3 месяца — Оптимальный результат</b>\n\n"
-            "💰 <b>Цена: 1 200 000 UZS</b> <i>(Выгода 300 000 UZS)</i>\n\n"
-            "📋 <b>Наполнение:</b>\n"
-            "• Всё, что входит в 1 месяц.\n"
-            "• Доступ к ИИ-нутрициологу и подсчету калорий по фото.\n"
-            "• Персональная корректировка рациона и тренировок под динамику веса.\n"
-            "• Доступ к закрытым прямым эфирам с разбором техники упражнений."
-        )
+        'ru': (
+            '🥈 ФИТНЕС (ВЫГОДНЕЕ) — 1 200 000 сум / 3 месяца\n'
+            '(Старая цена: 1 500 000 сум — экономия 300 000 сум!)\n'
+            '• Все возможности тарифа «Базовый» на 3 месяца\n'
+            '• 10 новых тренировочных уроков каждый месяц\n'
+            '• Групповой созвон 1 раз в неделю\n'
+            '• Групповая встреча 1 раз в месяц\n'
+            '• ИИ-расчёт БЖУ и ИИ-помощник по питанию'
+        ),
     },
-    "6": {
-        "uz": (
-            "🥇 <b>6 OYLIK TARIF — Maksimal natija / VIP</b>\n\n"
-            "💰 <b>Narxi: 2 300 000 UZS</b> <i>(Foyda 700 000 UZS)</i>\n\n"
-            "📋 <b>Paket tarkibi:</b>\n"
-            "• Klubning barcha materiallariga 6 oylik to'liq kirish.\n"
-            "• 🥇 <b>Shohrux bilan yopiq VIP kechki ovqat & Mastermind</b> — har 2 oyda maxsus restoran/lokatsiyada, yuzma-yuz muloqot va barcha savollaringizga javoblar.\n"
-            "• AI Smart Hub vositalariga cheksiz kirish.\n"
-            "• VIP qo'llab-quvvatlash va shaxsiy xaridlar ro'yxati."
+    '6': {
+        'uz': (
+            "🥇 VIP — 2 300 000 so'm / 6 oy\n"
+            "(Asl narxi: 3 000 000 so'm — 700 000 so'm tejang!)\n"
+            '• «Fitnes» tarifidagi barcha imkoniyatlar 6 oy davomida\n'
+            '• 👑 VIP BONUSLAR:\n'
+            '— Har oy 1 marta guruhli kechki ovqat (VIP ishtirokchilari bilan)\n'
+            '— Alohida yopiq VIP guruh'
         ),
-        "ru": (
-            "🥇 <b>Тариф 6 месяцев — VIP / Максимальный результат</b>\n\n"
-            "💰 <b>Цена: 2 300 000 UZS</b> <i>(Выгода 700 000 UZS)</i>\n\n"
-            "📋 <b>Наполнение:</b>\n"
-            "• Полный доступ ко всем материалам и обновлениям клуба на 6 месяцев.\n"
-            "• 🥇 <b>Закрытый VIP-ужин & Mastermind с Шохрухом</b> — раз в 2 месяца в особом ресторане/локации: живое общение вживую и ответы на все ваши вопросы.\n"
-            "• Полный безлимитный доступ ко всем ИИ-инструментам Smart Hub.\n"
-            "• Приоритетная поддержка и персональный шопинг-лист."
-        )
-    }
+        'ru': (
+            '🥇 VIP — 2 300 000 сум / 6 месяцев\n'
+            '(Старая цена: 3 000 000 сум — экономия 700 000 сум!)\n'
+            '• Все возможности тарифа «Фитнес» на 6 месяцев\n'
+            '• 👑 VIP-БОНУСЫ:\n'
+            '— Групповой ужин 1 раз в месяц с участниками VIP\n'
+            '— Отдельная VIP-группа для участников тарифа'
+        ),
+    },
 }
 
 ALL_TARIFFS_CARD = {
-    "uz": (
-        "🏋️‍♂️ <b>O'zingizga mos tarifni tanlang:</b>\n\n"
-        "🥉 <b>1 oylik — Boshlang'ich start</b>\n"
-        "💰 Narxi: <b>500 000 UZS</b>\n"
-        "📋 Paket tarkibi:\n"
-        "• 30 kun davomida yopiq kanalga to'liq kirish\n"
-        "• Mashg'ulot dasturlari va PP-retseptlar bazasi\n"
-        "• AI-nutritsiolog va foto-kaloriya vositalari\n"
-        "• Umumiy guruhda kunlik motivatsiya\n\n"
-        "🥈 <b>3 oylik — Optimal natija</b>\n"
-        "💰 Narxi: <b>1 200 000 UZS</b> (300 000 UZS tejamkorlik)\n"
-        "📋 Paket tarkibi:\n"
-        "• 1 oylik tarifdagi barcha imkoniyatlar\n"
-        "• Shaxsiy taomnoma va mashqlarni moslashtirish\n"
-        "• Jonli efirlarda texnika tahlili\n\n"
-        "🥇 <b>6 oylik — VIP / Maksimal natija</b>\n"
-        "💰 Narxi: <b>2 300 000 UZS</b> (700 000 UZS tejamkorlik)\n"
-        "📋 Paket tarkibi:\n"
-        "• Klubning barcha materiallariga 6 oylik to'liq kirish\n"
-        "• 🥇 Shohrux bilan yopiq VIP kechki ovqat & Mastermind (har 2 oyda maxsus restoran/lokatsiyada, yuzma-yuz muloqot va barcha savollarga javoblar)\n"
-        "• VIP qo'llab-quvvatlash va shaxsiy xaridlar ro'yxati"
+    'uz': (
+        "🏋️\u200d♂️ O'zingizga mos tarifni tanlang:\n"
+        '\n'
+        "🥉 BAZAVIY — 500 000 so'm / 1 oy\n"
+        "• Har oy 10 ta yangi mashg'ulot darsi\n"
+        "• Guruhli qo'ng'iroq haftasiga 1 marta\n"
+        '• Guruhli uchrashuv oyiga 1 marta\n'
+        '• Ratsionni AI orqali hisoblash (foto orqali BJU)\n'
+        "• AI yordamchi (mahsulot xaridi va ovqatlanish bo'yicha)\n"
+        '\n'
+        "🥈 FITNES (ENG OMMABOP) — 1 200 000 so'm / 3 oy\n"
+        "(Asl narxi: 1 500 000 so'm — 300 000 so'm tejang!)\n"
+        '• Barcha «Bazaviy» imkoniyatlar 3 oy davomida\n'
+        "• Har oy 10 ta yangi mashg'ulot darsi\n"
+        "• Guruhli qo'ng'iroq haftasiga 1 marta\n"
+        '• Guruhli uchrashuv oyiga 1 marta\n'
+        '• Ratsionni AI orqali hisoblash va AI yordamchi\n'
+        '\n'
+        "🥇 VIP — 2 300 000 so'm / 6 oy\n"
+        "(Asl narxi: 3 000 000 so'm — 700 000 so'm tejang!)\n"
+        '• «Fitnes» tarifidagi barcha imkoniyatlar 6 oy davomida\n'
+        '• 👑 VIP BONUSLAR:\n'
+        '— Har oy 1 marta guruhli kechki ovqat (VIP ishtirokchilari bilan)\n'
+        '— Alohida yopiq VIP guruh'
     ),
-    "ru": (
-        "🏋️‍♂️ <b>Выберите подходящий тариф:</b>\n\n"
-        "🥉 <b>Тариф 1 месяц — Базовый старт</b>\n"
-        "💰 Цена: <b>500 000 UZS</b>\n"
-        "📋 Наполнение:\n"
-        "• Доступ к закрытому каналу на 30 дней\n"
-        "• Программы тренировок и база ПП-рецептов\n"
-        "• ИИ-нутрициолог и подсчёт калорий по фото\n"
-        "• Ежедневная мотивация в общей группе\n\n"
-        "🥈 <b>Тариф 3 месяца — Оптимальный результат</b>\n"
-        "💰 Цена: <b>1 200 000 UZS</b> (выгода 300 000 UZS)\n"
-        "📋 Наполнение:\n"
-        "• Все возможности тарифа на 1 месяц\n"
-        "• Индивидуальное меню и корректировка упражнений\n"
-        "• Прямые эфиры с разбором техники\n\n"
-        "🥇 <b>Тариф 6 месяцев — VIP / Максимальный результат</b>\n"
-        "💰 Цена: <b>2 300 000 UZS</b> (выгода 700 000 UZS)\n"
-        "📋 Наполнение:\n"
-        "• Полный доступ ко всем материалам клуба на 6 месяцев\n"
-        "• 🥇 Закрытый VIP-ужин & Mastermind с Шохрухом (раз в 2 месяца в особом ресторане/локации: живое общение вживую и ответы на все вопросы)\n"
-        "• VIP-поддержка и персональный список покупок"
-    )
+    'ru': (
+        '🏋️\u200d♂️ Выберите подходящий тариф:\n'
+        '\n'
+        '🥉 БАЗОВЫЙ — 500 000 сум / месяц\n'
+        '• 10 новых тренировочных уроков каждый месяц\n'
+        '• Групповой созвон 1 раз в неделю\n'
+        '• Групповая встреча 1 раз в месяц\n'
+        '• ИИ-расчёт БЖУ по фото еды\n'
+        '• ИИ-помощник по закупу продуктов и питанию\n'
+        '\n'
+        '🥈 ФИТНЕС (ВЫГОДНЕЕ) — 1 200 000 сум / 3 месяца\n'
+        '(Старая цена: 1 500 000 сум — экономия 300 000 сум!)\n'
+        '• Все возможности тарифа «Базовый» на 3 месяца\n'
+        '• 10 новых тренировочных уроков каждый месяц\n'
+        '• Групповой созвон 1 раз в неделю\n'
+        '• Групповая встреча 1 раз в месяц\n'
+        '• ИИ-расчёт БЖУ и ИИ-помощник по питанию\n'
+        '\n'
+        '🥇 VIP — 2 300 000 сум / 6 месяцев\n'
+        '(Старая цена: 3 000 000 сум — экономия 700 000 сум!)\n'
+        '• Все возможности тарифа «Фитнес» на 6 месяцев\n'
+        '• 👑 VIP-БОНУСЫ:\n'
+        '— Групповой ужин 1 раз в месяц с участниками VIP\n'
+        '— Отдельная VIP-группа для участников тарифа'
+    ),
 }
 
 CASHBACK_ASK = {
@@ -268,6 +295,7 @@ CASHBACK_NOTIFY_REFERRER = {
 }
 
 MENU_BUTTONS = {
+    "training": {"uz": "🏋️ Mashg'ulotlar", "ru": "🏋️ Тренировки"},
     "profile": {"uz": "👤 Mening profilim", "ru": "👤 Мой профиль"},
     "fitness_hub": {"uz": "🧠 Sun'iy intellekt (AI)", "ru": "🧠 Искусственный интеллект (AI)"},
     "subscribe": {"uz": "🚀 Obuna bo'lish", "ru": "🚀 Оформить подписку"},
@@ -685,8 +713,8 @@ PAYMENT_SUCCESS_VIP = {
         "Siz eng yaxshi natijalar sari VIP yo'lni tanladingiz! 💪\n\n"
         "🔑 <b>1. Asosiy yopiq kanal havolasi:</b>\n{invite_link}\n\n"
         "👑 <b>2. Yopiq VIP guruh havolasi:</b>\n{vip_link}\n\n"
-        "VIP guruhda Shohrux bilan offlayn kechki ovqatlar va Mastermind uchrashuvlari "
-        "(har 2 oyda maxsus restoran/lokatsiyada) anonslari e'lon qilinadi.\n\n"
+        "VIP guruhda VIP ishtirokchilari bilan guruhli kechki ovqatlar "
+        "(har oy 1 marta) anonslari e'lon qilinadi.\n\n"
         "⚠️ Ikkala havola ham bir martalik va faqat siz uchun. Ularni boshqalarga bermang!\n\n"
         "📅 Obuna tugash sanasi: {expires_at}"
     ),
@@ -695,8 +723,8 @@ PAYMENT_SUCCESS_VIP = {
         "Вы выбрали VIP-путь к лучшим результатам! 💪\n\n"
         "🔑 <b>1. Ссылка на основной закрытый канал:</b>\n{invite_link}\n\n"
         "👑 <b>2. Ссылка на закрытую VIP-группу:</b>\n{vip_link}\n\n"
-        "В VIP-группе публикуются анонсы офлайн-ужинов и мастермайндов с Шохрухом "
-        "(раз в 2 месяца в особом ресторане/локации).\n\n"
+        "В VIP-группе публикуются анонсы групповых ужинов с участниками VIP "
+        "(1 раз в месяц).\n\n"
         "⚠️ Обе ссылки одноразовые и только для вас. Не передавайте их другим!\n\n"
         "📅 Дата окончания подписки: {expires_at}"
     )
@@ -705,15 +733,15 @@ PAYMENT_SUCCESS_VIP = {
 VIP_EXPIRED = {
     "uz": (
         "😔 <b>Sizning VIP (6 oylik) obunangiz yakuniga yetdi.</b>\n\n"
-        "Siz yopiq VIP guruhdan chiqarildingiz. Endi offlayn kechki ovqatlar va "
-        "Mastermind uchrashuvlari anonslarini ko'ra olmaysiz.\n\n"
-        "🤝 VIP darajaga qaytish va Shohrux bilan yopiq uchrashuvlarda qatnashish uchun "
+        "Siz yopiq VIP guruhdan chiqarildingiz. Endi guruhli kechki ovqatlar "
+        "anonslarini ko'ra olmaysiz.\n\n"
+        "🤝 VIP darajaga qaytish va guruhli kechki ovqatlarda qatnashish uchun "
         "obunangizni hoziroq uzaytiring! 👇"
     ),
     "ru": (
         "😔 <b>Ваша VIP-подписка (6 месяцев) завершилась.</b>\n\n"
         "Вы исключены из закрытой VIP-группы и больше не будете видеть анонсы "
-        "офлайн-ужинов и мастермайндов с Шохрухом.\n\n"
+        "групповых ужинов с участниками VIP.\n\n"
         "🤝 Чтобы вернуть VIP-уровень и участвовать в закрытых встречах, "
         "продлите подписку прямо сейчас! 👇"
     )
@@ -841,4 +869,25 @@ OPEN_TARIFFS_AGAIN_BTN = {
 SUPPORT_CANCELLED = {
     "uz": "❌ Murojaat bekor qilindi.",
     "ru": "❌ Обращение отменено.",
+}
+
+CLICK_CARD_INSTRUCTION = {
+    'uz': (
+        "💡 Click ilovangiz bo'lmasa ham to'lashingiz mumkin!\n\n"
+        "Havolaga o'ting va 'Boshqa usul / Karta orqali to'lash' bo'limini tanlab, "
+        "istalgan Uzcard yoki Humo kartangiz ma'lumotlarini kiritib to'lovni amalga oshiring."
+    ),
+    'ru': (
+        "💡 Можно оплатить даже без приложения Click!\n\n"
+        "Откройте ссылку, выберите 'Boshqa usul / Karta orqali to‘lash' "
+        "и оплатите банковской картой Uzcard или Humo."
+    ),
+}
+CLICK_VIDEO_INSTRUCTION = {
+    'uz': "Quyidagi qisqa video-yo'riqnomada bu batafsil ko'rsatilgan 👇",
+    'ru': "В короткой видеоинструкции показано, как это сделать 👇",
+}
+CLICK_CHECKOUT_OPEN = {
+    'uz': "🔗 To'lov sahifasini ochish",
+    'ru': '🔗 Открыть страницу оплаты',
 }

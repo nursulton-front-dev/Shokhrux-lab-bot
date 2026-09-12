@@ -340,3 +340,36 @@ async def test_invite_rotation_cleans_expired_links_and_persists_new_owner_links
     assert bot.revoke_chat_invite_link.await_count == 2
     assert bot.create_chat_invite_link.await_args.kwargs["creates_join_request"] is True
     bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_intent_cannot_be_reopened_before_cron(db):
+    async with db() as session:
+        session.add(User(telegram_id=42, language='uz', balance=0))
+        await session.commit()
+        payment = await rahmat.create_payment_intent(session, user_id=42, months=1,
+            method='click', use_cashback=False, request_key='expired-screen')
+        payment.created_at = dt.datetime.now(UTC)-dt.timedelta(days=2)
+        await session.commit()
+        with pytest.raises(PaymentValidationError, match='expired'):
+            await rahmat.create_payment_intent(session, user_id=42, months=1,
+                method='click', use_cashback=False, request_key='expired-screen')
+    assert await count(db, Payment) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_invite_permission_preserves_money_and_logs_action(db, caplog):
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import CreateChatInviteLink
+    pid = await seed(db)
+    assert await confirm(db, pid)
+    bot = AsyncMock()
+    bot.create_chat_invite_link.side_effect = TelegramBadRequest(
+        method=CreateChatInviteLink(chat_id=-1001), message='not enough rights to invite users')
+    await payment_delivery.deliver_pending_payments(bot)
+    assert 'can_invite_users' in caplog.text
+    async with db() as session:
+        assert (await session.get(Payment, pid)).status == 'completed'
+        job = await session.get(PaymentDelivery, pid)
+        assert job.completed_at is None and job.attempts == 1
+    bot.send_message.assert_not_awaited()

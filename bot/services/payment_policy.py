@@ -1,4 +1,13 @@
 """Authoritative server-side tariff amounts (integer UZS)."""
+import datetime
+
+ORDER_TTL = datetime.timedelta(hours=24)
+
+
+def order_is_expired(created_at: datetime.datetime) -> bool:
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    return created_at + ORDER_TTL <= datetime.datetime.now(datetime.timezone.utc)
 
 TARIFF_PRICES: dict[int, int] = {1: 500_000, 3: 1_200_000, 6: 2_300_000}
 
@@ -8,6 +17,10 @@ BALANCE_ONLY_METHODS = frozenset({"cashback"})
 
 class PaymentValidationError(ValueError):
     """A payment cannot be completed without changing its financial terms."""
+
+
+class CashbackCoversTariff(PaymentValidationError):
+    """Use the balance activation flow instead of a zero-value gateway invoice."""
 
 
 def assert_order_matches_tariff(*, amount: int, cashback_applied: int | None,

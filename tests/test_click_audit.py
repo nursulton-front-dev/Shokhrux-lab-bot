@@ -416,3 +416,106 @@ async def test_cancelled_transaction_cannot_be_confirmed_later(client, db):
     assert body["error"] == errors.TRANSACTION_CANCELLED
     async with db() as session:
         assert (await session.get(Payment, 214)).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_complete_commits_one_subscription_and_delivery(client, db):
+    import asyncio
+    from sqlalchemy import func
+    from bot.database.models import PaymentDelivery
+    await seed_order(db, order_id=240)
+    prepared = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=40, merchant_trans_id=240, amount='500000.00'))
+    confirm = form(ACTION_COMPLETE, click_trans_id=40, merchant_trans_id=240,
+                   amount='500000.00', merchant_prepare_id=prepared['merchant_prepare_id'])
+    results = await asyncio.gather(*(call(client, ACTION_COMPLETE, confirm) for _ in range(12)))
+    assert all(item == results[0] for item in results)
+    assert results[0]['error'] == errors.SUCCESS
+    async with db() as session:
+        assert await session.scalar(select(func.count()).select_from(Subscription)) == 1
+        assert await session.scalar(select(func.count()).select_from(PaymentDelivery)) == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_retry_cannot_change_order(client, db):
+    await seed_order(db, order_id=241)
+    await seed_order(db, order_id=242)
+    await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=41, merchant_trans_id=241, amount='500000.00'))
+    result = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=41, merchant_trans_id=242, amount='500000.00'))
+    assert result['error'] == errors.TRANSACTION_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_prepare_refuses_expired_order_before_scheduler_runs(client, db):
+    await seed_order(db, order_id=243)
+    async with db() as session:
+        (await session.get(Payment, 243)).created_at = dt.datetime.now(UTC)-dt.timedelta(days=2)
+        await session.commit()
+    result = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=43, merchant_trans_id=243, amount='500000.00'))
+    assert result['error'] == errors.TRANSACTION_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_complete_rollback_restores_gateway_state_and_money(client, db):
+    from sqlalchemy import event
+    from bot.database.models import PaymentDelivery
+    await seed_order(db, order_id=244)
+    prepared = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=44, merchant_trans_id=244, amount='500000.00'))
+    confirm = form(ACTION_COMPLETE, click_trans_id=44, merchant_trans_id=244,
+                   amount='500000.00', merchant_prepare_id=prepared['merchant_prepare_id'])
+    def fail(*args):
+        raise RuntimeError('injected outbox insert failure')
+    event.listen(PaymentDelivery, 'before_insert', fail)
+    try:
+        result = await call(client, ACTION_COMPLETE, confirm)
+    finally:
+        event.remove(PaymentDelivery, 'before_insert', fail)
+    assert result['error'] == errors.UPDATE_FAILED
+    async with db() as session:
+        assert (await session.get(Payment, 244)).status == 'pending'
+        assert (await session.scalar(select(ClickTransaction))).state == STATE_PREPARED
+        assert await session.scalar(select(Subscription)) is None
+        assert await session.scalar(select(PaymentDelivery)) is None
+    assert (await call(client, ACTION_COMPLETE, confirm))['error'] == errors.SUCCESS
+
+
+@pytest.mark.parametrize('amount', ['NaN', 'sNaN', 'Infinity', '1e99999999', '9'*128, '1.001'])
+def test_nonfinite_or_oversized_amount_is_not_an_exception(amount):
+    assert protocol.to_tiyin(amount) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transaction', ['9'*5000, '²', '--12'])
+async def test_malformed_unsigned_id_still_returns_protocol_error(client, transaction):
+    response = await client.post(api.CLICK_PREPARE_PATH, data={
+        'click_trans_id': transaction, 'merchant_trans_id': transaction})
+    assert response.status == 200
+    assert (await response.json())['error'] == errors.BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_changed_cashback_terms_even_if_tariff_still_matches(client, db):
+    async with db() as session:
+        session.add(User(telegram_id=USER_ID, balance=100_000, language='uz'))
+        await session.flush()
+        session.add(Payment(id=245, user_id=USER_ID, amount=400_000, cashback_applied=100_000,
+                            tariff_months=1, status='pending', payment_method=METHOD_CLICK))
+        await session.commit()
+    prepared = await call(client, ACTION_PREPARE, form(
+        ACTION_PREPARE, click_trans_id=45, merchant_trans_id=245, amount='400000.00'))
+    async with db() as session:
+        order = await session.get(Payment, 245)
+        order.amount = 500_000
+        order.cashback_applied = 0
+        await session.commit()
+    result = await call(client, ACTION_COMPLETE, form(
+        ACTION_COMPLETE, click_trans_id=45, merchant_trans_id=245, amount='400000.00',
+        merchant_prepare_id=prepared['merchant_prepare_id']))
+    assert result['error'] == errors.INCORRECT_AMOUNT
+    async with db() as session:
+        assert await session.scalar(select(Subscription)) is None
+        assert (await session.get(User, USER_ID)).balance == 100_000

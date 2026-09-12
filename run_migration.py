@@ -4,6 +4,7 @@ import asyncio
 from sqlalchemy import text
 
 from bot.database.db import engine, init_db
+from bot.database.audit_migration import migrate_audit_fields
 
 
 async def main() -> None:
@@ -26,9 +27,12 @@ async def main() -> None:
             await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
             for statement in columns:
                 await conn.execute(text(statement))
+        async with engine.begin() as conn:
+            await migrate_audit_fields(conn)
         async with engine.connect() as conn:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
             for statement in (
+                "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ix_click_transactions_active_order ON click_transactions(payment_id) WHERE state IN (1, 2)",
                 "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ix_payments_request_key ON payments(request_key)",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_subscriptions_user_status_expiry ON subscriptions(user_id, status, expires_at)",
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_subscriptions_status_expiry ON subscriptions(status, expires_at)",
